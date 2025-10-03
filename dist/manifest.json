@@ -1,0 +1,19 @@
+{
+  "connectors": [
+    {
+      "type": "graph",
+      "module": "./graph/index.js",
+      "configBuilder": "./graph/config.js",
+      "instances": [
+        {
+          "id": "graph1",
+          "config": {
+            "tenantId": "<tenant-guid>",
+            "clientId": "<app-client-id>",
+            "clientSecret": "<app-client-secret>"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+openapi: 3.1.0
+info:
+  title: ICF-Inspired Connector Service
+  version: 1.1.0
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+security:
+  - bearerAuth: []
