@@ -1,41 +1,76 @@
 import type { ConnectorSpi, ConnectorConfig } from "../spi/types.js";
 import type { Configuration } from "../spi/configuration.js";
+import type { ConnectorKey } from "../loader/types.js";  // ← Import from loader types
+import { toConnectorKey } from "../loader/types.js";     // ← Import helper
 
 type Factory = (config: ConnectorConfig) => Promise<ConnectorSpi>;
 type ConfigBuilder = (raw: any) => Promise<Configuration>;
 
-export interface ConnectorInstance { id: string; config: ConnectorConfig; impl: ConnectorSpi; }
+export interface ConnectorInstance {
+    id: string;
+    connectorKey: ConnectorKey;  // ← Now uses imported type
+    config: ConnectorConfig;
+    impl: ConnectorSpi;
+}
 
 export class ConnectorRegistry {
   private factories = new Map<string, Factory>();
   private instances = new Map<string, ConnectorInstance>();
   private configBuilders = new Map<string, ConfigBuilder>();
 
-  registerFactory(type: string, factory: Factory) { this.factories.set(type, factory); }
-  registerConfigBuilder(type: string, builder: ConfigBuilder) { this.configBuilders.set(type, builder); }
+  registerFactory(type: string, version: string, factory: Factory) {
+        const key = toConnectorKey(type, version);  // ← Use helper
+        this.factories.set(key, factory);
+  }
 
-  async initInstance(id: string, type: string, rawConfig: ConnectorConfig) {
-    const factory = this.factories.get(type);
-    if (!factory) throw new Error(`Unknown connector type ${type}`);
-    const builder = this.configBuilders.get(type);
+  registerConfigBuilder(type: string, version: string, builder: ConfigBuilder) {
+        const key = toConnectorKey(type, version);  // ← Use helper
+        this.configBuilders.set(key, builder);
+  }
+
+  async initInstance(id: string, type: string, version: string, rawConfig: ConnectorConfig) {
+
+    const key = toConnectorKey(type, version);
+    const factory = this.factories.get(key);
+
+    if (!factory)
+          throw new Error(`Unknown connector type ${type}@${version}`);
+
+    const builder = this.configBuilders.get(key);
     const configObj: any = builder ? await builder(rawConfig) : rawConfig;
-    //console.log('[connector] config', configObj);
-    if (configObj && typeof configObj.validate === "function") await configObj.validate();
+
+    if (configObj && typeof configObj.validate === "function")
+        await configObj.validate();
+
+
     const spi = await factory({
       logger: console,
       config: configObj,
       instanceId: id,
       connectorId: type,
+      connectorVersion: version,
       type,
     });
-    this.instances.set(id, { id, config: configObj, impl: spi });
+
+    const connectorKey: ConnectorKey = { type, version };
+    this.instances.set(id, { id, connectorKey, config: configObj, impl: spi });
     return this.instances.get(id)!;
-    //const impl = await factory(configObj);
-    //const inst: ConnectorInstance = { id, config: configObj, impl };
-    //(inst.impl as any).id = id;
-    //this.instances.set(id, inst);
-    //return inst;
   }
+   getVersions(type: string): string[] {
+        const versions: string[] = [];
+        for (const key of this.factories.keys()) {
+            if (key.startsWith(`${type}@`)) {
+                versions.push(key.split('@')[1]!);
+            }
+        }
+        return versions.sort();
+    }
+
+    // Helper: get latest version of a type
+    getLatestVersion(type: string): string | undefined {
+        const versions = this.getVersions(type);
+        return versions[versions.length - 1];
+    }
 
   get(id: string) {
     const inst = this.instances.get(id);
