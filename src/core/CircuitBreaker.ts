@@ -26,11 +26,15 @@ export class CircuitBreaker {
     if (this.inflight >= this.opts.maxConcurrent) throw new Error("TooManyRequests");
 
     this.inflight++;
-    let timer: any = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      const timeoutPromise = new Promise<never>((_, rej) => {
+        timer = setTimeout(() => rej(new Error("BreakerTimeout")), this.opts.timeoutMs);
+      });
+
       const res = await Promise.race([
         fn(),
-        new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error("BreakerTimeout")), this.opts.timeoutMs); })
+        timeoutPromise
       ]);
       this.onSuccess();
       return res;
@@ -38,7 +42,7 @@ export class CircuitBreaker {
       this.onFailure();
       throw e;
     } finally {
-      if (timer) clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       this.inflight--;
     }
   }
