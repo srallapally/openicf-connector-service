@@ -5,7 +5,7 @@ import type { ConnectorRegistry } from "../core/ConnectorRegistry.js";
 import type { OperationOptions } from "../spi/types.js";
 import semver from "semver";
 
-const OBJECT_CLASS_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const OBJECT_CLASS_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/;
 
 export function buildRouter(registry: ConnectorRegistry) {
   const r = Router();
