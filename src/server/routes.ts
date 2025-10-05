@@ -3,6 +3,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import type { ConnectorRegistry } from "../core/ConnectorRegistry.js";
 import type { OperationOptions } from "../spi/types.js";
+import semver from "semver";
 
 const OBJECT_CLASS_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 
@@ -291,7 +292,7 @@ export function buildRouter(registry: ConnectorRegistry) {
 
         const result = Array.from(types.entries()).map(([type, versions]) => ({
             type,
-            versions: [...new Set(versions)].sort()
+            versions: [...new Set(versions)].sort((a, b) => semver.compare(a, b))
         }));
 
         return res.json({ types: result });
