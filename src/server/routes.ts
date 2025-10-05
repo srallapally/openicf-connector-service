@@ -65,10 +65,10 @@ export function buildRouter(registry: ConnectorRegistry) {
 
   function getSpi(id: string) {
     // Prefer has() if available to avoid try/catch
-    if (typeof (registry as any).has === "function" && !(registry as any).has(id)) return undefined;
+    if (typeof (registry as any).has === "function" && !registry.has(id)) return undefined;
     // try { return (registry as any).get(id); } catch { return undefined; }
       try {
-          const instance = (registry as any).get(id);
+          const instance = registry.get(id);
           return instance?.impl;  // ← Return the impl, not the whole instance
       } catch {
           return undefined;
@@ -88,8 +88,8 @@ export function buildRouter(registry: ConnectorRegistry) {
   // -------- Introspection --------
   r.get("/connectors", (_req: Request, res: Response) => {
     try {
-      if (typeof (registry as any).ids === "function") return res.json({ ids: (registry as any).ids() });
-      if (typeof (registry as any).keys === "function") return res.json({ ids: Array.from((registry as any).keys()) });
+      if (typeof registry.ids === "function") return res.json({ ids: registry.ids() });
+      if (typeof registry.keys === "function") return res.json({ ids: Array.from(registry.keys()) });
       return res.json({ ids: [] });
     } catch {
       return res.json({ ids: [] });
@@ -282,7 +282,7 @@ export function buildRouter(registry: ConnectorRegistry) {
     r.get("/connectors/_types", (_req: Request, res: Response) => {
         const types = new Map<string, string[]>();
 
-        for (const inst of (registry as any).list()) {
+        for (const inst of registry.list()) {
             const { type, version } = inst.connectorKey;
             if (!types.has(type)) {
                 types.set(type, []);
