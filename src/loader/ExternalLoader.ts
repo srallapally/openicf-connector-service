@@ -136,9 +136,10 @@ export async function loadExternalConnectors(connectorsDir: string, registry: Co
         for (const inst of instances) {
           const instanceVersion = inst.connectorVersion ?? version;
           //const mergedCfg = resolveEnvStrings({ ...(baseCfg || {}), ...(inst.config || {}) });
-          const mergedRaw = { ...baseCfg, ...(inst.config || {}) };
-          const effectiveCfg = buildConfiguration ? await buildConfiguration(mergedRaw) : mergedRaw;
-
+          //const mergedRaw = { ...baseCfg, ...(inst.config || {}) };
+          //const effectiveCfg = buildConfiguration ? await buildConfiguration(mergedRaw) : mergedRaw;
+          const mergedCfg = resolveEnvStrings({ ...baseCfg, ...(inst.config || {}) });
+          const effectiveCfg = buildConfiguration ? await buildConfiguration(mergedCfg) : mergedCfg;
           await registry.initInstance(inst.id, manifest.type, instanceVersion, effectiveCfg);
           console.log(`[external] registered ${manifest.type}@${instanceVersion} instance: ${inst.id}`);
         }
