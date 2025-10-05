@@ -11,6 +11,13 @@ class JtiCache {
     const now = Math.floor(Date.now()/1000);
     for (const [j, exp] of this.map.entries()) if (exp <= now) this.map.delete(j);
   }
+  claim(jti: string, expEpochSec: number): boolean {
+        this.sweep();
+        const current = this.map.get(jti);
+        if (current && current > Math.floor(Date.now() / 1000)) return false;
+        this.map.set(jti, expEpochSec);
+        return true;
+  }
 }
 const jtiCache = new JtiCache();
 
@@ -79,8 +86,10 @@ export async function requireJwt(requiredScopes?: string | string[]) {
 
       const jti = payload.jti;
       if (jti) {
-        if (jtiCache.has(jti)) return res.status(401).json({ error: "Replay detected" });
-        jtiCache.put(jti, exp);
+          if (jti && !jtiCache.claim(jti, exp)) {
+              return res.status(401).json({ error: "Replay detected" });
+          }
+          jtiCache.put(jti, exp);
       }
 
       const scopes = Array.isArray((payload as any).scope)
