@@ -9,6 +9,13 @@ const key = (parts: any[]) => parts.map(p => JSON.stringify(p)).join("|");
 export class ConnectorFacade {
   constructor(private impl: any, private breaker = new CircuitBreaker()) {}
 
+  private invalidateCache(parts: any[]) {
+      const prefix = key(parts);
+      for (const entryKey of cache.keys()) {
+          if (entryKey.startsWith(prefix)) cache.delete(entryKey);
+      }
+  }
+
   private call<T>(fn: () => Promise<T>): Promise<T> {
       return this.breaker.exec(fn);
   }
@@ -32,7 +39,9 @@ export class ConnectorFacade {
     async create(objectClass: string, attrs: Record<string, any>, options?: OperationOptions) {
         if (!this.impl.create) throw new Error("Create not supported");
         const res = await this.call(() => this.impl.create(objectClass, attrs, options));
-        cache.delete(key(["schema", this.impl.id ?? "anon"]));
+        const connectorId = this.impl.id ?? "anon";
+        this.invalidateCache(["schema", connectorId]);
+        this.invalidateCache(["get", connectorId, objectClass]);
         return res;
     }
 
@@ -48,14 +57,16 @@ export class ConnectorFacade {
     async update(objectClass: string, uid: string, attrs: Record<string, any>, options?: OperationOptions) {
         if (!this.impl.update) throw new Error("Update not supported");
         const res = await this.call(() => this.impl.update(objectClass, uid, attrs, options));
-        cache.delete(key(["get", this.impl.id ?? "anon", objectClass, uid]));
+        const connectorId = this.impl.id ?? "anon";
+        this.invalidateCache(["get", connectorId, objectClass, uid]);
         return res;
     }
 
     async delete(objectClass: string, uid: string, options?: OperationOptions) {
         if (!this.impl.delete) throw new Error("Delete not supported");
         const r = await this.call(() => this.impl.delete(objectClass, uid, options));
-        cache.delete(key(["get", this.impl.id ?? "anon", objectClass, uid]));
+        const connectorId = this.impl.id ?? "anon";
+        this.invalidateCache(["get", connectorId, objectClass, uid]);
         return r;
     }
 
