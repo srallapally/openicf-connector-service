@@ -4,16 +4,17 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 // import types that fit your project:
 import type { ConnectorRegistry } from "../core/ConnectorRegistry.js";
-type InstanceDef = { id: string; config?: Record<string, unknown> };
-type Instances = InstanceDef[];
+import type { Manifest, InstanceDef, Instances } from "./types.js";
+//type InstanceDef = { id: string; config?: Record<string, unknown> };
+//type Instances = InstanceDef[];
 
-type Manifest = {
-  id: string;
-  type: string;
-  entry: string;
-  config?: string;
-  instances?: Array<{ id: string; config?: Record<string, unknown> }>;
-};
+//type Manifest = {
+//  id: string;
+//  type: string;
+//  entry: string;
+//  config?: string;
+//  instances?: Array<{ id: string; config?: Record<string, unknown> }>;
+//};
 
 function resolveEnvStrings<T>(val: T): T {
   if (typeof val === "string") {
@@ -77,13 +78,13 @@ export async function loadExternalConnectors(connectorsDir: string, registry: Co
 
     const dir = path.join(connectorsDir, d.name);
     const manifestPath = path.join(dir, "manifest.json");
-    console.log(`loadExternalConnectors ${manifestPath}`);
+
     let manifest: Manifest;
     try {
       manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
-      if (!manifest.id || !manifest.type || !manifest.entry) {
-        console.warn(`[external] Invalid manifest: ${manifestPath}`);
-        continue;
+      if (!manifest.id || !manifest.type || !manifest.entry || !manifest.version) {
+            console.warn(`[external] Invalid manifest (missing version): ${manifestPath}`);
+            continue;
       }
     } catch (e: any) {
       console.warn(`[external] skipping ${d.name}: cannot read manifest.json (${e?.message || e})`);
@@ -91,18 +92,21 @@ export async function loadExternalConnectors(connectorsDir: string, registry: Co
     }
 
     try {
-      // 1) Load module
+
       const modUrl = pathToFileURL(path.join(dir, manifest.entry)).href;
       const mod = await import(modUrl);
+
       if (typeof mod.default !== "function") {
         console.warn(`[external] ${manifest.id}: default export is not a factory function`);
         continue;
       }
-      const type = (manifest.type ?? manifest.id ?? d.name).trim();
-      await registry.registerFactory(type, mod.default);          // <-- move this up here
-      console.log(`[external] loaded connector factory: ${type}`);
 
-      // 2) Optional config module
+      const type = (manifest.type ?? manifest.id ?? d.name).trim();
+      const version = manifest.version.trim();
+      await registry.registerFactory(type,version, mod.default);
+      console.log(`[external] loaded connector: ${type}@${version}`);
+
+
       let baseCfg: any = {};
       let buildConfiguration: ((raw:any)=>Promise<any>) | undefined;
 
@@ -130,16 +134,13 @@ export async function loadExternalConnectors(connectorsDir: string, registry: Co
         console.warn(`[external] ${manifest.id}: no instances defined`);
       } else {
         for (const inst of instances) {
-          const mergedCfg = resolveEnvStrings({ ...(baseCfg || {}), ...(inst.config || {}) });
+          const instanceVersion = inst.connectorVersion ?? version;
+          //const mergedCfg = resolveEnvStrings({ ...(baseCfg || {}), ...(inst.config || {}) });
           const mergedRaw = { ...baseCfg, ...(inst.config || {}) };
           const effectiveCfg = buildConfiguration ? await buildConfiguration(mergedRaw) : mergedRaw;
 
-          //if (effectiveCfg?.validate instanceof Function) {
-          //  await effectiveCfg.validate();       // ← "In validate ..." will log here
-          //}
-          //await registry.initInstance(inst.id, manifest.type, mergedCfg);
-          await registry.initInstance(inst.id, manifest.type, effectiveCfg);
-          console.log(`[external] registered ${manifest.type} instance: ${inst.id}`);
+          await registry.initInstance(inst.id, manifest.type, instanceVersion, effectiveCfg);
+          console.log(`[external] registered ${manifest.type}@${instanceVersion} instance: ${inst.id}`);
         }
       }
     } catch (e: any) {
