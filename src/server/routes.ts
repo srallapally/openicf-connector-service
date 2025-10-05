@@ -95,11 +95,20 @@ export function buildRouter(registry: ConnectorRegistry) {
     }
   });
 
-  r.get<{ id: string }>("/connectors/:id", (req: Request<{ id: string }>, res: Response) => {
-    const spi = getSpi(req.params.id);
-    if (!spi) return jsonErr(res, 404, "Not found");
-    return res.json({ id: req.params.id, loaded: true });
-  });
+    r.get<{ id: string }>("/connectors/:id", (req: Request<{ id: string }>, res: Response) => {
+        try {
+            const instance = registry.get(req.params.id);  // ← Get full instance, not just SPI
+
+            return res.json({
+                id: instance.id,
+                type: instance.connectorKey.type,
+                version: instance.connectorKey.version,
+                loaded: true
+            });
+        } catch (e: any) {
+            return jsonErr(res, 404, e?.message || "Connector not found");
+        }
+    });
 
   // -------- Schema & Test --------
   r.get<{ id: string }>("/connectors/:id/_schema", async (req: Request<{ id: string }>, res: Response) => {
@@ -289,6 +298,7 @@ export function buildRouter(registry: ConnectorRegistry) {
     });
 
 // Get metadata about a specific instance including its version
+    /*
     r.get<{ id: string }>("/connectors/:id", (req: Request<{ id: string }>, res: Response) => {
         try {
             const inst = (registry as any).get(req.params.id);
@@ -302,7 +312,7 @@ export function buildRouter(registry: ConnectorRegistry) {
             return jsonErr(res, 404, "Not found");
         }
     });
-
+*/
   return r;
 }
 
