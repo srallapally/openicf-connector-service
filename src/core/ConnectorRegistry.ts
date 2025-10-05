@@ -8,6 +8,7 @@ type ConfigBuilder = (raw: any) => Promise<Configuration>;
 
 export interface ConnectorInstance {
     id: string;
+    type: string;
     connectorKey: ConnectorKey;  // ← Now uses imported type
     config: ConnectorConfig;
     impl: ConnectorSpi;
@@ -53,7 +54,7 @@ export class ConnectorRegistry {
     });
 
     const connectorKey: ConnectorKey = { type, version };
-    this.instances.set(id, { id, connectorKey, config: configObj, impl: spi });
+    this.instances.set(id, { id, type, connectorKey, config: configObj, impl: spi });
     return this.instances.get(id)!;
   }
    getVersions(type: string): string[] {
