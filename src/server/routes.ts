@@ -62,7 +62,7 @@ export function buildRouter(registry: ConnectorRegistry) {
     }
     return out as OperationOptions;
   }
-
+  // removed unnecessary casting for registry.get,has,keys calls
   function getSpi(id: string) {
     // Prefer has() if available to avoid try/catch
     if (typeof (registry as any).has === "function" && !registry.has(id)) return undefined;
@@ -289,7 +289,7 @@ export function buildRouter(registry: ConnectorRegistry) {
             }
             types.get(type)!.push(version);
         }
-
+        // add semver.compare
         const result = Array.from(types.entries()).map(([type, versions]) => ({
             type,
             versions: [...new Set(versions)].sort((a, b) => semver.compare(a, b))
