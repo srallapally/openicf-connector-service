@@ -1,9 +1,8 @@
 # Ignore node_modules directory
 node_modules/
-
-    # Ignore build output
-    dist/
-    build/
+# Ignore build output
+dist/
+build/
 
     # Ignore IDE-specific files (e.g., WebStorm's .idea folder, but Git handles this automatically with a separate .idea/.gitignore)
     # .idea/
@@ -12,6 +11,5 @@ node_modules/
     *.log
 
     # Ignore temporary files
-    *.tmp!/dist/
-!/node_modules/
-!/.env
+*.tmp
+.env
