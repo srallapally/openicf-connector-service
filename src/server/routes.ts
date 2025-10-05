@@ -296,24 +296,8 @@ export function buildRouter(registry: ConnectorRegistry) {
 
         return res.json({ types: result });
     });
-
-// Get metadata about a specific instance including its version
-    /*
-    r.get<{ id: string }>("/connectors/:id", (req: Request<{ id: string }>, res: Response) => {
-        try {
-            const inst = (registry as any).get(req.params.id);
-            return res.json({
-                id: inst.id,
-                type: inst.connectorKey.type,
-                version: inst.connectorKey.version,
-                loaded: true
-            });
-        } catch {
-            return jsonErr(res, 404, "Not found");
-        }
-    });
-*/
   return r;
 }
+
 
 export default buildRouter;
