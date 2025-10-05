@@ -1,7 +1,8 @@
 import type { ConnectorSpi, ConnectorConfig } from "../spi/types.js";
 import type { Configuration } from "../spi/configuration.js";
 import type { ConnectorKey } from "../loader/types.js";  // ← Import from loader types
-import { toConnectorKey } from "../loader/types.js";     // ← Import helper
+import { toConnectorKey } from "../loader/types.js";
+import semver from "semver";
 
 type Factory = (config: ConnectorConfig) => Promise<ConnectorSpi>;
 type ConfigBuilder = (raw: any) => Promise<Configuration>;
@@ -57,6 +58,7 @@ export class ConnectorRegistry {
     this.instances.set(id, { id, type, connectorKey, config: configObj, impl: spi });
     return this.instances.get(id)!;
   }
+  /*
    getVersions(type: string): string[] {
         const versions: string[] = [];
         for (const key of this.factories.keys()) {
@@ -66,7 +68,13 @@ export class ConnectorRegistry {
         }
         return versions.sort();
     }
-
+*/
+    getVersions(type: string): string[] {
+        return Array.from(this.factories.keys())
+            .filter(k => k.startsWith(type + '@'))
+            .map(k => k.split('@')[1]!)
+            .sort((a, b) => semver.compare(a, b));  // ← Handles all semver edge cases
+    }
     // Helper: get latest version of a type
     getLatestVersion(type: string): string | undefined {
         const versions = this.getVersions(type);
