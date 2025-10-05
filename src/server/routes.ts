@@ -266,6 +266,43 @@ export function buildRouter(registry: ConnectorRegistry) {
       }
   );
 
+    // src/server/routes.ts additions
+
+// Get all connector types and their versions
+    r.get("/connectors/_types", (_req: Request, res: Response) => {
+        const types = new Map<string, string[]>();
+
+        for (const inst of (registry as any).list()) {
+            const { type, version } = inst.connectorKey;
+            if (!types.has(type)) {
+                types.set(type, []);
+            }
+            types.get(type)!.push(version);
+        }
+
+        const result = Array.from(types.entries()).map(([type, versions]) => ({
+            type,
+            versions: [...new Set(versions)].sort()
+        }));
+
+        return res.json({ types: result });
+    });
+
+// Get metadata about a specific instance including its version
+    r.get<{ id: string }>("/connectors/:id", (req: Request<{ id: string }>, res: Response) => {
+        try {
+            const inst = (registry as any).get(req.params.id);
+            return res.json({
+                id: inst.id,
+                type: inst.connectorKey.type,
+                version: inst.connectorKey.version,
+                loaded: true
+            });
+        } catch {
+            return jsonErr(res, 404, "Not found");
+        }
+    });
+
   return r;
 }
 
