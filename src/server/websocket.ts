@@ -64,6 +64,14 @@ class OAuthTokenProvider {
     return this.accessToken && Date.now() + this.earlyExpiryMs < this.expiresAt;
   }
 
+  /**
+   * Get token expiry time in milliseconds since epoch
+   * Returns 0 if no token is currently cached
+   */
+  getTokenExpiryTime(): number {
+    return this.expiresAt;
+  }
+
   async getToken(): Promise<string> {
     if (this.isTokenValid()) return this.accessToken!;
 
@@ -122,6 +130,13 @@ class RemoteConnectorService {
   private shuttingDown = false;
   private readonly facades = new Map<string, ConnectorFacade>();
 
+  // Token expiry tracking for security
+  private connectionEstablishedAt: number = 0;
+  private currentTokenExpiresAt: number = 0;
+  private tokenCheckInterval: NodeJS.Timeout | null = null;
+  private readonly TOKEN_CHECK_INTERVAL_MS = 30_000; // Check every 30 seconds
+  private readonly TOKEN_REFRESH_BUFFER_MS = 5 * 60_000; // Refresh 5 min before expiry
+
   constructor(private readonly opts: RemoteConnectorServiceOptions) {
     this.reconnectInitialDelayMs = opts.reconnectInitialDelayMs ?? 1_000;
     this.reconnectMaxDelayMs = opts.reconnectMaxDelayMs ?? 30_000;
@@ -135,6 +150,7 @@ class RemoteConnectorService {
 
   async shutdown() {
     this.shuttingDown = true;
+    this.stopTokenValidationCheck();
     if (this.reconnectHandle) {
       clearTimeout(this.reconnectHandle);
       this.reconnectHandle = null;
@@ -164,18 +180,73 @@ class RemoteConnectorService {
     return facade;
   }
 
+  /**
+   * Start periodic token validation checks
+   * Security: Prevents expired/revoked tokens from remaining active
+   */
+  private startTokenValidationCheck() {
+    this.stopTokenValidationCheck(); // Clear any existing interval
+
+    this.tokenCheckInterval = setInterval(() => {
+      this.checkTokenExpiry();
+    }, this.TOKEN_CHECK_INTERVAL_MS);
+
+    // Unref so it doesn't prevent process exit
+    this.tokenCheckInterval.unref();
+  }
+
+  /**
+   * Stop token validation checks
+   */
+  private stopTokenValidationCheck() {
+    if (this.tokenCheckInterval) {
+      clearInterval(this.tokenCheckInterval);
+      this.tokenCheckInterval = null;
+    }
+  }
+
+  /**
+   * Check if current token is expired or about to expire
+   * Proactively reconnect with fresh token before expiry
+   */
+  private checkTokenExpiry() {
+    if (this.shuttingDown) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    const now = Date.now();
+
+    // Check if token has already expired
+    if (now >= this.currentTokenExpiresAt) {
+      console.warn(`[ws-auth] Token expired, disconnecting for security`);
+      this.ws.close(1008, "token-expired");
+      this.stopTokenValidationCheck();
+      this.scheduleReconnect();
+      return;
+    }
+
+    // Check if token is about to expire (within buffer window)
+    const timeUntilExpiry = this.currentTokenExpiresAt - now;
+    if (timeUntilExpiry <= this.TOKEN_REFRESH_BUFFER_MS) {
+      console.log(`[ws-auth] Token expiring in ${Math.floor(timeUntilExpiry / 1000)}s, proactively reconnecting`);
+      this.ws.close(1000, "token-refresh");
+      this.stopTokenValidationCheck();
+      this.scheduleReconnect();
+    }
+  }
+
   private async openConnection() {
     if (this.shuttingDown) return;
     try {
       const token = await this.opts.oauth.getToken();
-      this.establishWebSocket(token);
+      const tokenExpiresAt = this.opts.oauth.getTokenExpiryTime();
+      this.establishWebSocket(token, tokenExpiresAt);
     } catch (err) {
       console.error(`[ws] failed to get token or connect: ${(err as Error).message}`);
       this.scheduleReconnect();
     }
   }
 
-  private establishWebSocket(token: string) {
+  private establishWebSocket(token: string, tokenExpiresAt: number) {
     const ws = new WebSocket(this.opts.serverUrl, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -185,6 +256,17 @@ class RemoteConnectorService {
     ws.on("open", () => {
       console.log(`[ws] connected to ${this.opts.serverUrl}`);
       this.reconnectDelayMs = this.reconnectInitialDelayMs;
+
+      // Track token expiry for security
+      this.connectionEstablishedAt = Date.now();
+      this.currentTokenExpiresAt = tokenExpiresAt;
+
+      const expiresInSec = Math.floor((tokenExpiresAt - Date.now()) / 1000);
+      console.log(`[ws-auth] Connection established with token expiring in ${expiresInSec}s`);
+
+      // Start periodic token validation
+      this.startTokenValidationCheck();
+
       this.sendServiceInfo();
     });
 
@@ -198,6 +280,7 @@ class RemoteConnectorService {
       const readableReason = reason.toString("utf8");
       console.warn(`[ws] connection closed (${code}) ${readableReason}`);
       this.ws = null;
+      this.stopTokenValidationCheck(); // Stop token checks when connection closes
       if (!this.shuttingDown) this.scheduleReconnect();
     });
 
