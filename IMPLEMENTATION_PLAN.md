@@ -1,71 +1,8 @@
 # OpenICF Connector Service - Split Implementation Plan
 
-## ⚠️ IMPORTANT WARNING
-
-**DO NOT apply these changes to the current codebase yet!**
-
-This is an implementation plan for the PROPOSED architecture described in `DESIGN_SPLIT_ARCHITECTURE.md`.
-
-**Prerequisites before starting:**
-1. ✅ Design documents reviewed and approved
-2. ✅ Stakeholder sign-off obtained
-3. ✅ Full backup of current codebase created
-4. ✅ New feature branch created for implementation
-
-**If you haven't completed the above, STOP and review the design first!**
-
----
-
 ## Overview
 
 This document provides step-by-step instructions for implementing the architectural split outlined in `DESIGN_SPLIT_ARCHITECTURE.md`.
-
-## Quick Summary: What This Plan Does
-
-This plan transforms the current monolithic structure:
-```
-src/
-├── core/
-├── spi/
-├── server/
-└── ...
-```
-
-Into a workspace monorepo:
-```
-packages/
-├── core/           (@openicf/connector-core)
-└── websocket/      (@openicf/connector-websocket)
-```
-
-## Critical Order of Operations
-
-**You MUST follow this exact order:**
-
-1. **Phase 1**: Create directory structure and package.json files
-   - ⚠️ Root package.json will be replaced (backup first!)
-   - Create packages/core/package.json
-   - Create packages/websocket/package.json
-
-2. **Phase 2**: Copy code files to new locations
-   - NO npm install yet!
-
-3. **Phase 3**: Copy test files to new locations
-   - NO npm install yet!
-
-4. **Phase 4**: NOW run npm install (workspace dependencies will resolve)
-   - Build packages
-   - Run tests
-
-5. **Phase 5**: Write documentation
-
-6. **Phase 6**: Optional backward compatibility
-
-7. **Phase 7**: Cleanup old files
-
-**❌ DO NOT run `npm install` before completing Phases 1-3!**
-
-The `workspace:*` dependency only works in a properly configured npm workspace.
 
 ## Prerequisites
 
@@ -73,15 +10,8 @@ The `workspace:*` dependency only works in a properly configured npm workspace.
 - npm >= 10.0.0 (for workspace support)
 - Git
 - Understanding of the current codebase
-- **Current codebase backed up**
-- **New implementation branch created**
 
 ## Phase 1: Workspace Setup
-
-### ⚠️ Phase 1 Warning
-Phase 1 will restructure your package.json and create a monorepo. Make sure you have:
-- Created a backup: `git stash` or `git branch backup-$(date +%Y%m%d)`
-- Created implementation branch: `git checkout -b feature/split-architecture`
 
 ### Step 1.1: Create Workspace Structure
 
@@ -104,20 +34,9 @@ mkdir -p packages/websocket/src/server
 mkdir -p packages/websocket/src/security
 ```
 
-### Step 1.2: Backup and Replace Root package.json
+### Step 1.2: Update Root package.json
 
-**⚠️ CRITICAL: This will replace your current package.json!**
-
-First, backup the current package.json:
-
-```bash
-# Backup current package.json
-cp package.json package.json.backup
-git add package.json.backup
-git commit -m "backup: Save current package.json before workspace migration"
-```
-
-Then, **completely replace** the root `package.json` with this new workspace configuration:
+Create/update root `package.json`:
 
 ```json
 {
@@ -248,12 +167,6 @@ Create `packages/core/tsconfig.json`:
 ### Step 1.4: Create WebSocket Package Configuration
 
 Create `packages/websocket/package.json`:
-
-**Note about `"workspace:*"` dependency:**
-- This special npm/yarn/pnpm protocol links to the local `packages/core` directory
-- It only works AFTER you complete Step 1.2 (workspace setup)
-- npm will automatically resolve it to the local package
-- This is NOT a regular npm package version
 
 ```json
 {
@@ -708,37 +621,14 @@ export default defineConfig({
 
 ## Phase 4: Build & Verify
 
-**Prerequisites for Phase 4:**
-- ✅ All Phase 1 steps completed (workspace structure created)
-- ✅ All Phase 2 steps completed (code migrated)
-- ✅ All Phase 3 steps completed (tests migrated)
-
-**Important:** Do NOT run `npm install` until ALL package.json files are in place!
-
 ### Step 4.1: Install Dependencies
-
-**⚠️ This is when workspace dependencies will be resolved!**
 
 ```bash
 # From repository root
 npm install
 
-# This will:
-# 1. Install root devDependencies
-# 2. Install dependencies for packages/core
-# 3. Install dependencies for packages/websocket
-# 4. Link @openicf/connector-core to packages/websocket automatically
+# This will install dependencies for all workspace packages
 ```
-
-**Expected output:**
-```
-added XXX packages, and audited YYY packages
-```
-
-**If you see `EUNSUPPORTEDPROTOCOL` error:**
-- You haven't completed Phase 1 (workspace setup)
-- The root package.json is missing the "workspaces" field
-- You tried to run npm install before creating all package.json files
 
 ### Step 4.2: Build Packages
 
