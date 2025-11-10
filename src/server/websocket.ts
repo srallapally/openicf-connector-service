@@ -6,6 +6,8 @@ import { loadExternalConnectors } from "../loader/ExternalLoader.js";
 import type { OperationOptions } from "../spi/types.js";
 // Security: Import RateLimiter for WebSocket message-level rate limiting
 import { RateLimiter } from "../core/RateLimiter.js";
+// CSRF Protection Enhancement: Import CSRF validation for WebSocket connections
+import { loadCsrfConfig, validateWebSocketOrigin } from "./csrf.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -253,6 +255,9 @@ class RemoteConnectorService {
   }
 
   private establishWebSocket(token: string, tokenExpiresAt: number) {
+    // CSRF Protection Enhancement: Load CSRF config for WebSocket Origin validation
+    const csrfConfig = loadCsrfConfig();
+
     const ws = new WebSocket(this.opts.serverUrl, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -295,8 +300,25 @@ class RemoteConnectorService {
       if (ws.readyState === WebSocket.CLOSED) this.scheduleReconnect();
     });
 
-    ws.on("unexpected-response", (_req: IncomingMessage, res: IncomingMessage) => {
+    ws.on("unexpected-response", (req: IncomingMessage, res: IncomingMessage) => {
       console.error(`[ws] unexpected response: ${res.statusCode}`);
+
+      // CSRF Protection Enhancement: Validate Origin header during WebSocket handshake
+      // This prevents cross-origin WebSocket connections from malicious sites
+      const originHeader = req.headers.origin;
+      const hostHeader = req.headers.host;
+
+      if (!validateWebSocketOrigin(originHeader, csrfConfig, hostHeader)) {
+        console.error(
+          `[ws-csrf] WebSocket connection rejected due to invalid origin: ` +
+          `origin=${originHeader}, host=${hostHeader}`
+        );
+        res.resume();
+        ws.close();
+        if (!this.shuttingDown) this.scheduleReconnect();
+        return;
+      }
+
       if (res.statusCode === 401 || res.statusCode === 403) this.opts.oauth.invalidate();
       res.resume();
       ws.close();

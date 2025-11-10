@@ -1,10 +1,13 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
+import cookieParser from "cookie-parser";
 import { buildRouter } from "./routes.js";
 import { securityMiddleware, bodyLimit, requestTimeout } from "./hardening.js";
 import { ConnectorRegistry } from "../core/ConnectorRegistry.js";
 import { requireJwt } from "./auth.js";
 import { loadExternalConnectors } from "../loader/ExternalLoader.js";
+// CSRF Protection Enhancement: Import CSRF protection middleware
+import { loadCsrfConfig, csrfProtection, csrfTokenEndpoint } from "./csrf.js";
 
 function getArgValue(argv: readonly string[], name: string): string | undefined {
   // supports: --name value  OR  --name=value
@@ -46,11 +49,27 @@ async function main() {
   app.use(...bodyLimit("512kb"));
   app.use(requestTimeout);
 
+  // CSRF Protection Enhancement: Add cookie parser for CSRF token validation
+  // Must come before CSRF protection middleware
+  app.use(cookieParser());
+
+  // CSRF Protection Enhancement: Load CSRF configuration
+  const csrfConfig = loadCsrfConfig();
+
+  // CSRF Protection Enhancement: Add CSRF token endpoint (public, no auth required)
+  // Allows clients to retrieve CSRF tokens before making authenticated requests
+  app.get("/csrf-token", csrfTokenEndpoint(csrfConfig));
+
   // Registry
   const registry = new ConnectorRegistry();
 
   // 🔐 Protect all /connectors/* routes with JWT — mount this BEFORE router
   app.use("/connectors", await requireJwt());
+
+  // CSRF Protection Enhancement: Apply CSRF protection to all /connectors routes
+  // This provides defense-in-depth protection alongside JWT and CORS
+  app.use("/connectors", csrfProtection(csrfConfig));
+
   // Mount router ONCE at root. It contains /connectors routes inside.
   app.use("/", buildRouter(registry));
 
