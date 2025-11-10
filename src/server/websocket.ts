@@ -4,6 +4,8 @@ import { ConnectorRegistry } from "../core/ConnectorRegistry.js";
 import { ConnectorFacade } from "../core/ConnectorFacade.js";
 import { loadExternalConnectors } from "../loader/ExternalLoader.js";
 import type { OperationOptions } from "../spi/types.js";
+// Security: Import RateLimiter for WebSocket message-level rate limiting
+import { RateLimiter } from "../core/RateLimiter.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -136,6 +138,10 @@ class RemoteConnectorService {
   private tokenCheckInterval: NodeJS.Timeout | null = null;
   private readonly TOKEN_CHECK_INTERVAL_MS = 30_000; // Check every 30 seconds
   private readonly TOKEN_REFRESH_BUFFER_MS = 5 * 60_000; // Refresh 5 min before expiry
+
+  // Security: Rate limiter for WebSocket messages to prevent abuse
+  // Matches HTTP rate limiting: 300 req/min = 5 tokens/sec, burst capacity of 20
+  private readonly rateLimiter = new RateLimiter(20, 5);
 
   constructor(private readonly opts: RemoteConnectorServiceOptions) {
     this.reconnectInitialDelayMs = opts.reconnectInitialDelayMs ?? 1_000;
@@ -341,6 +347,34 @@ class RemoteConnectorService {
     }
 
     const requestId = typeof (parsed as any).requestId === "string" ? (parsed as any).requestId : undefined;
+
+    // Security: Apply rate limiting to prevent abuse
+    // Different message types have different costs:
+    // - ping, list-connectors: 0.5 tokens (lightweight, informational)
+    // - operation: 1 token (expensive, performs actual work)
+    let messageCost = 1; // Default cost for unknown/operation messages
+    if (type === "ping" || type === "list-connectors") {
+      messageCost = 0.5; // Lightweight operations
+    }
+
+    // Security: Check rate limit before processing message
+    if (!this.rateLimiter.tryConsume(messageCost)) {
+      const violations = this.rateLimiter.getViolationCount();
+      console.warn(
+        `[ws-rate-limit] Message rate limit exceeded (type: ${type}, violations: ${violations})`
+      );
+
+      // Send error response to client instead of silently dropping
+      if (requestId) {
+        this.send({
+          type: "error",
+          requestId,
+          error: "Rate limit exceeded. Please slow down your requests.",
+          code: "RATE_LIMIT_EXCEEDED",
+        });
+      }
+      return;
+    }
 
     switch (type) {
       case "ping": {
