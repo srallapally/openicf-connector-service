@@ -1,0 +1,64 @@
+{
+  "name": "@openicf/connector-core",
+  "version": "1.0.0",
+  "description": "OpenICF Connector Core Library - Transport-independent connector framework",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./registry": {
+      "import": "./dist/registry/index.js",
+      "types": "./dist/registry/index.d.ts"
+    },
+    "./infra": {
+      "import": "./dist/infra/index.js",
+      "types": "./dist/infra/index.d.ts"
+    },
+    "./spi": {
+      "import": "./dist/spi/index.js",
+      "types": "./dist/spi/index.d.ts"
+    },
+    "./filter": {
+      "import": "./dist/filter/index.js",
+      "types": "./dist/filter/index.d.ts"
+    },
+    "./loader": {
+      "import": "./dist/loader/index.js",
+      "types": "./dist/loader/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . || true"
+  },
+  "keywords": [
+    "openicf",
+    "connector",
+    "identity",
+    "provisioning"
+  ],
+  "dependencies": {
+    "lru-cache": "^11.0.1",
+    "tarn": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "typescript": "^5.6.2",
+    "vitest": "^3.2.4"
+  }
+}

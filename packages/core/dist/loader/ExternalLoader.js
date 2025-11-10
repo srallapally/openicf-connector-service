@@ -67,12 +67,11 @@ export async function loadExternalConnectors(connectorsDir, registry) {
             continue;
         const dir = path.join(connectorsDir, d.name);
         const manifestPath = path.join(dir, "manifest.json");
-        console.log(`loadExternalConnectors ${manifestPath}`);
         let manifest;
         try {
             manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
-            if (!manifest.id || !manifest.type || !manifest.entry) {
-                console.warn(`[external] Invalid manifest: ${manifestPath}`);
+            if (!manifest.id || !manifest.type || !manifest.entry || !manifest.version) {
+                console.warn(`[external] Invalid manifest (missing version): ${manifestPath}`);
                 continue;
             }
         }
@@ -81,7 +80,6 @@ export async function loadExternalConnectors(connectorsDir, registry) {
             continue;
         }
         try {
-            // 1) Load module
             const modUrl = pathToFileURL(path.join(dir, manifest.entry)).href;
             const mod = await import(modUrl);
             if (typeof mod.default !== "function") {
@@ -89,9 +87,9 @@ export async function loadExternalConnectors(connectorsDir, registry) {
                 continue;
             }
             const type = (manifest.type ?? manifest.id ?? d.name).trim();
-            await registry.registerFactory(type, mod.default); // <-- move this up here
-            console.log(`[external] loaded connector factory: ${type}`);
-            // 2) Optional config module
+            const version = manifest.version.trim();
+            await registry.registerFactory(type, version, mod.default);
+            console.log(`[external] loaded connector: ${type}@${version}`);
             let baseCfg = {};
             let buildConfiguration;
             if (manifest.config) {
@@ -119,17 +117,14 @@ export async function loadExternalConnectors(connectorsDir, registry) {
             }
             else {
                 for (const inst of instances) {
-                    const mergedCfg = resolveEnvStrings({ ...(baseCfg || {}), ...(inst.config || {}) });
+                    const instanceVersion = inst.connectorVersion ?? version;
+                    //const mergedCfg = resolveEnvStrings({ ...(baseCfg || {}), ...(inst.config || {}) });
                     //const mergedRaw = { ...baseCfg, ...(inst.config || {}) };
                     //const effectiveCfg = buildConfiguration ? await buildConfiguration(mergedRaw) : mergedRaw;
                     const mergedCfg = resolveEnvStrings({ ...baseCfg, ...(inst.config || {}) });
                     const effectiveCfg = buildConfiguration ? await buildConfiguration(mergedCfg) : mergedCfg;
-                    //if (effectiveCfg?.validate instanceof Function) {
-                    //  await effectiveCfg.validate();       // ← "In validate ..." will log here
-                    //}
-                    //await registry.initInstance(inst.id, manifest.type, mergedCfg);
-                    await registry.initInstance(inst.id, manifest.type, effectiveCfg);
-                    console.log(`[external] registered ${manifest.type} instance: ${inst.id}`);
+                    await registry.initInstance(inst.id, manifest.type, instanceVersion, effectiveCfg);
+                    console.log(`[external] registered ${manifest.type}@${instanceVersion} instance: ${inst.id}`);
                 }
             }
         }
@@ -138,3 +133,4 @@ export async function loadExternalConnectors(connectorsDir, registry) {
         }
     }
 }
+//# sourceMappingURL=ExternalLoader.js.map
