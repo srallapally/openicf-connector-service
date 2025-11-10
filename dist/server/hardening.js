@@ -33,7 +33,9 @@ const optionsBase = {
     attributesToGet: z.array(z.string().min(1).max(256)).max(200).optional(),
     pageSize: z.number().int().min(1).max(500).optional(),
     pagedResultsOffset: z.number().int().min(0).max(1_000_000).optional(),
-    pagedResultsCookie: z.string().max(10000).nullable().optional(),
+    // Security: Limit pagedResultsCookie to 1KB to prevent abuse as key-value store
+    // and reduce DoS attack surface. Pagination cookies should be compact tokens/hashes.
+    pagedResultsCookie: z.string().max(1024).nullable().optional(),
     sortKeys: z.array(sortKeySchema).max(5).optional(),
     container: z.object({ objectClass: z.string().min(1).max(128), uid: z.string().min(1).max(512) }).nullable().optional(),
     scope: z.enum(["OBJECT", "ONE_LEVEL", "SUBTREE"]).optional(),
