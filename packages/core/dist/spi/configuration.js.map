@@ -1,0 +1,1 @@
+{"version":3,"file":"configuration.js","sourceRoot":"","sources":["../../src/spi/configuration.ts"],"names":[],"mappings":"AAIA,MAAM,UAAU,eAAe,CAAC,IAAY,EAAE,CAAU;IACtD,IAAI,OAAO,CAAC,KAAK,QAAQ,IAAI,CAAC,CAAC,IAAI,EAAE,KAAK,EAAE,EAAE,CAAC;QAC7C,MAAM,IAAI,KAAK,CAAC,2BAA2B,IAAI,eAAe,CAAC,CAAC;IAClE,CAAC;AACH,CAAC"}

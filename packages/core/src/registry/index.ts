@@ -1,0 +1,3 @@
+export { ConnectorRegistry } from './ConnectorRegistry.js';
+export { ConnectorFacade } from './ConnectorFacade.js';
+export type { ConnectorInstance } from './ConnectorRegistry.js';

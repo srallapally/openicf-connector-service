@@ -1,5 +1,5 @@
-import { CircuitBreaker } from "./CircuitBreaker.js";
-import { makeCache } from "./Cache.js";
+import { CircuitBreaker } from "../infra/CircuitBreaker.js";
+import { makeCache } from "../infra/Cache.js";
 const cache = makeCache();
 const key = (parts) => parts.map(p => JSON.stringify(p)).join("|");
 export class ConnectorFacade {
@@ -8,6 +8,13 @@ export class ConnectorFacade {
     constructor(impl, breaker = new CircuitBreaker()) {
         this.impl = impl;
         this.breaker = breaker;
+    }
+    invalidateCache(parts) {
+        const prefix = key(parts);
+        for (const entryKey of cache.keys()) {
+            if (entryKey.startsWith(prefix))
+                cache.delete(entryKey);
+        }
     }
     call(fn) {
         return this.breaker.exec(fn);
@@ -30,7 +37,9 @@ export class ConnectorFacade {
         if (!this.impl.create)
             throw new Error("Create not supported");
         const res = await this.call(() => this.impl.create(objectClass, attrs, options));
-        cache.delete(key(["schema", this.impl.id ?? "anon"]));
+        const connectorId = this.impl.id ?? "anon";
+        this.invalidateCache(["schema", connectorId]);
+        this.invalidateCache(["get", connectorId, objectClass]);
         return res;
     }
     async get(objectClass, uid, options) {
@@ -48,14 +57,16 @@ export class ConnectorFacade {
         if (!this.impl.update)
             throw new Error("Update not supported");
         const res = await this.call(() => this.impl.update(objectClass, uid, attrs, options));
-        cache.delete(key(["get", this.impl.id ?? "anon", objectClass, uid]));
+        const connectorId = this.impl.id ?? "anon";
+        this.invalidateCache(["get", connectorId, objectClass, uid]);
         return res;
     }
     async delete(objectClass, uid, options) {
         if (!this.impl.delete)
             throw new Error("Delete not supported");
         const r = await this.call(() => this.impl.delete(objectClass, uid, options));
-        cache.delete(key(["get", this.impl.id ?? "anon", objectClass, uid]));
+        const connectorId = this.impl.id ?? "anon";
+        this.invalidateCache(["get", connectorId, objectClass, uid]);
         return r;
     }
     async addAttributeValues(objectClass, uid, add, options) {
@@ -90,3 +101,4 @@ export class ConnectorFacade {
         return this.call(() => this.impl.scriptOnConnector(ctx));
     }
 }
+//# sourceMappingURL=ConnectorFacade.js.map
