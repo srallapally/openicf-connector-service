@@ -1,19 +1,54 @@
 import { createRemoteJWKSet, jwtVerify, errors as JoseErrors } from "jose";
 import { URL } from "url";
-class JtiCache {
-    sweepMs;
-    map = new Map();
-    constructor(sweepMs = 60_000) {
-        this.sweepMs = sweepMs;
-        setInterval(() => this.sweep(), sweepMs).unref();
+import { LRUCache } from "lru-cache";
+/**
+ * JTI (JWT ID) cache for replay attack prevention.
+ * Uses LRU cache with bounded size to prevent memory exhaustion DoS.
+ *
+ * Security: Max 10,000 entries prevents unbounded memory growth.
+ * TTL is calculated per-token based on exp claim for efficient cleanup.
+ */
+export class JtiCache {
+    maxSize;
+    cache;
+    constructor(maxSize = 10_000) {
+        this.maxSize = maxSize;
+        this.cache = new LRUCache({
+            max: maxSize,
+            ttlAutopurge: true,
+            allowStale: false,
+        });
     }
-    has(jti) { return this.map.has(jti); }
-    put(jti, expEpochSec) { this.map.set(jti, expEpochSec); }
-    sweep() {
+    /**
+     * Check if a JTI has been seen before (replay detection)
+     */
+    has(jti) {
+        return this.cache.has(jti);
+    }
+    /**
+     * Store a JTI with TTL based on token expiry
+     * @param jti - JWT ID claim
+     * @param expEpochSec - Token expiration time in seconds since epoch
+     */
+    put(jti, expEpochSec) {
         const now = Math.floor(Date.now() / 1000);
-        for (const [j, exp] of this.map.entries())
-            if (exp <= now)
-                this.map.delete(j);
+        const ttlSeconds = expEpochSec - now;
+        // Only store if token hasn't expired yet
+        if (ttlSeconds > 0) {
+            this.cache.set(jti, true, { ttl: ttlSeconds * 1000 });
+        }
+    }
+    /**
+     * Get current cache size for monitoring
+     */
+    size() {
+        return this.cache.size;
+    }
+    /**
+     * Clear all entries (useful for testing)
+     */
+    clear() {
+        this.cache.clear();
     }
 }
 const jtiCache = new JtiCache();
