@@ -1,17 +1,63 @@
 import { NextFunction, Request, Response } from "express";
 import { createRemoteJWKSet, jwtVerify, JWTPayload, errors as JoseErrors } from "jose";
 import { URL } from "url";
+import { LRUCache } from "lru-cache";
 
-class JtiCache {
-  private map = new Map<string, number>();
-  constructor(private sweepMs = 60_000) { setInterval(() => this.sweep(), sweepMs).unref(); }
-  has(jti: string) { return this.map.has(jti); }
-  put(jti: string, expEpochSec: number) { this.map.set(jti, expEpochSec); }
-  private sweep() {
-    const now = Math.floor(Date.now()/1000);
-    for (const [j, exp] of this.map.entries()) if (exp <= now) this.map.delete(j);
+/**
+ * JTI (JWT ID) cache for replay attack prevention.
+ * Uses LRU cache with bounded size to prevent memory exhaustion DoS.
+ *
+ * Security: Max 10,000 entries prevents unbounded memory growth.
+ * TTL is calculated per-token based on exp claim for efficient cleanup.
+ */
+export class JtiCache {
+  private cache: LRUCache<string, boolean>;
+
+  constructor(private maxSize = 10_000) {
+    this.cache = new LRUCache<string, boolean>({
+      max: maxSize,
+      ttlAutopurge: true,
+      allowStale: false,
+    });
+  }
+
+  /**
+   * Check if a JTI has been seen before (replay detection)
+   */
+  has(jti: string): boolean {
+    return this.cache.has(jti);
+  }
+
+  /**
+   * Store a JTI with TTL based on token expiry
+   * @param jti - JWT ID claim
+   * @param expEpochSec - Token expiration time in seconds since epoch
+   */
+  put(jti: string, expEpochSec: number): void {
+    const now = Math.floor(Date.now() / 1000);
+    const ttlSeconds = expEpochSec - now;
+
+    // Only store if token hasn't expired yet
+    if (ttlSeconds > 0) {
+      this.cache.set(jti, true, { ttl: ttlSeconds * 1000 });
+    }
+  }
+
+  /**
+   * Get current cache size for monitoring
+   */
+  size(): number {
+    return this.cache.size;
+  }
+
+  /**
+   * Clear all entries (useful for testing)
+   */
+  clear(): void {
+    this.cache.clear();
   }
 }
+
 const jtiCache = new JtiCache();
 
 const JWKS_URI = process.env.JWT_JWKS_URI!;
