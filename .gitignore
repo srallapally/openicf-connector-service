@@ -12,6 +12,10 @@ node_modules/
     *.log
 
     # Ignore temporary files
-    *.tmp!/dist/
-!/node_modules/
-!/.env
+    *.tmp
+
+# Explicitly include compiled dist folder (compiled output is committed)
+!/dist/
+
+# Note: node_modules/ is ignored (line 2) and should NEVER be committed
+# !/.env is commented out - .env files should not be committed for security
