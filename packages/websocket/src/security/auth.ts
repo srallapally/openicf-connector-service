@@ -64,6 +64,7 @@ export class TokenReplayCache {
 
 // Legacy export for backwards compatibility
 export const JtiCache = TokenReplayCache;
+export type JtiCache = TokenReplayCache;
 
 const replayCache = new TokenReplayCache();
 

@@ -35,6 +35,7 @@ export declare class TokenReplayCache {
     clear(): void;
 }
 export declare const JtiCache: typeof TokenReplayCache;
+export type JtiCache = TokenReplayCache;
 /**
  * JWT configuration interface
  */
