@@ -304,14 +304,16 @@ export function csrfTokenEndpoint(config: CsrfConfig) {
     const token = generateCsrfToken(config.signingSecret);
 
     // CSRF Protection Enhancement: Set token in HTTP-only, secure cookie
+    // CRITICAL FIX: Enable HTTPOnly to prevent XSS attacks from stealing the token
+    // Token is still available through response body for JavaScript (double-submit pattern)
     res.cookie(config.cookieName, token, {
-      httpOnly: false, // Must be readable by JavaScript for double-submit pattern
+      httpOnly: true,  // CRITICAL FIX: Enable HTTPOnly to protect against XSS
       secure: process.env.NODE_ENV === "production", // HTTPS only in production
       sameSite: "strict", // Strict same-site policy
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
     });
 
-    // Return token in response body
+    // Return token in response body for JavaScript to use in double-submit pattern
     return res.json({
       token,
       headerName: config.headerName,

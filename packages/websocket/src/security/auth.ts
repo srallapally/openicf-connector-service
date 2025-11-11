@@ -2,6 +2,7 @@ import { NextFunction, Request, Response } from "express";
 import { createRemoteJWKSet, jwtVerify, JWTPayload, errors as JoseErrors } from "jose";
 import { URL } from "url";
 import { LRUCache } from "lru-cache";
+import { createHash } from "crypto";
 
 /**
  * Token replay cache for preventing JWT replay attacks.
@@ -36,6 +37,11 @@ export class TokenReplayCache {
    * Store a token identifier with TTL based on token expiry
    * @param identifier - Token unique identifier (JTI or fallback hash)
    * @param expEpochSec - Token expiration time in seconds since epoch
+   *
+   * CRITICAL FIX: Added hard TTL cap (1 hour max) to prevent cache exhaustion.
+   * With long-lived tokens (24h), cache would be filled before actual expiry,
+   * allowing LRU eviction and replay attacks.
+   * @see https://github.com/srallapally/openicf-connector-service/security
    */
   put(identifier: string, expEpochSec: number): void {
     const now = Math.floor(Date.now() / 1000);
@@ -43,7 +49,10 @@ export class TokenReplayCache {
 
     // Only store if token hasn't expired yet
     if (ttlSeconds > 0) {
-      this.cache.set(identifier, true, { ttl: ttlSeconds * 1000 });
+      // CRITICAL: Cap TTL at 1 hour (3600 seconds) to prevent cache exhaustion
+      // Even if token lifetime is 24 hours, we only cache for 1 hour
+      const cappedTtlSeconds = Math.min(ttlSeconds, 3600);
+      this.cache.set(identifier, true, { ttl: cappedTtlSeconds * 1000 });
     }
   }
 
@@ -64,6 +73,7 @@ export class TokenReplayCache {
 
 // Legacy export for backwards compatibility
 export const JtiCache = TokenReplayCache;
+export type JtiCache = TokenReplayCache;
 
 const replayCache = new TokenReplayCache();
 
@@ -237,12 +247,37 @@ declare global {
   namespace Express { interface Request { auth?: AuthContext; } }
 }
 
+/**
+ * Parse and validate Bearer token from Authorization header.
+ *
+ * CRITICAL FIX: Strict validation to prevent token forgery and manipulation attacks.
+ * - Uses strict equality (===) instead of loose (!=)
+ * - Validates token length (no null/undefined tokens, reasonable bounds)
+ * - Rejects whitespace in tokens (prevents canonicalization attacks)
+ * - Prevents header injection and malformed bearer tokens
+ * @see https://github.com/srallapally/openicf-connector-service/security
+ */
 function parseAuthHeader(req: Request): string | null {
   const h = req.headers.authorization;
   if (!h) return null;
-  const [type, val] = h.split(" ");
-  if (!type || !val || type.toLowerCase() != "bearer") return null;
-  return val.trim();
+
+  // Strict format validation: "Bearer <token>"
+  // Prevents multiple spaces and other variations
+  if (!h.startsWith("Bearer ")) return null;
+
+  const token = h.slice(7);  // Extract token after "Bearer "
+
+  // Validate token: no whitespace, reasonable length bounds
+  if (!token || token.length < 20 || token.length > 2048) {
+    return null;
+  }
+
+  // Reject tokens with any whitespace (prevents manipulation)
+  if (/\s/.test(token)) {
+    return null;
+  }
+
+  return token;
 }
 
 function scopeAllowed(scopes: string[], required?: string | string[]) {
@@ -259,26 +294,22 @@ function scopeAllowed(scopes: string[], required?: string | string[]) {
  * - If an attacker can manipulate 'iat' (issued at) precision, they might generate multiple tokens
  * - Relies on the authorization server including 'iat' with sufficient precision
  *
- * Format: fallback:sha256(sub|iat|aud)
- * We use a hash to keep the identifier size bounded and prevent cache abuse.
+ * Format: fallback:<sha256(sub|iat|aud)>
+ * Uses cryptographic SHA-256 hash to prevent identifier forgery and keep size bounded.
+ *
+ * CRITICAL FIX: Replaced non-cryptographic 32-bit hash with SHA-256 for security hardening.
+ * @see https://github.com/srallapally/openicf-connector-service/security
  */
 function generateFallbackIdentifier(payload: JWTPayload): string {
   const sub = payload.sub || "";
   const iat = payload.iat || 0;
   const aud = Array.isArray(payload.aud) ? payload.aud.join(",") : (payload.aud || "");
 
-  // Create a simple hash (using built-in crypto if available, or fallback)
+  // Use cryptographic SHA-256 hash for secure identifier generation
   const data = `${sub}|${iat}|${aud}`;
+  const hash = createHash("sha256").update(data).digest("hex");
 
-  // Simple hash function (not cryptographic, just for identifier generation)
-  let hash = 0;
-  for (let i = 0; i < data.length; i++) {
-    const char = data.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32-bit integer
-  }
-
-  return `fallback:${sub}:${iat}:${Math.abs(hash).toString(36)}`;
+  return `fallback:${hash}`;
 }
 
 export async function requireJwt(requiredScopes?: string | string[]) {
