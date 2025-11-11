@@ -1,4 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+
+// Set required environment variables before importing auth module
+process.env.JWT_JWKS_URI = "https://example.com/.well-known/jwks.json";
+process.env.JWT_EXPECTED_ISS = "https://example.com";
+process.env.JWT_EXPECTED_AUD = "test-audience";
+
 import { validateJwtConfig, JwtConfig } from "../src/security/auth.js";
 
 describe("JWT Config Validation", () => {
