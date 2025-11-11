@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
+// Set required environment variables before importing modules that validate on load
+process.env.JWT_JWKS_URI = "https://example.com/.well-known/jwks.json";
+process.env.JWT_EXPECTED_ISS = "https://example.com";
+process.env.JWT_EXPECTED_AUD = "test-audience";
+
 describe("JWT Configuration - JTI Requirement", () => {
   let originalEnv: NodeJS.ProcessEnv;
 
@@ -7,7 +12,7 @@ describe("JWT Configuration - JTI Requirement", () => {
     // Save original environment
     originalEnv = { ...process.env };
 
-    // Set required JWT config
+    // Ensure required JWT config
     process.env.JWT_JWKS_URI = "https://example.com/.well-known/jwks.json";
     process.env.JWT_EXPECTED_ISS = "https://example.com";
     process.env.JWT_EXPECTED_AUD = "test-audience";
@@ -25,7 +30,7 @@ describe("JWT Configuration - JTI Requirement", () => {
     it("should default to true (secure by default) when not set", async () => {
       delete process.env.JWT_REQUIRE_JTI;
 
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       const config = validateJwtConfig();
 
       expect(config.requireJti).toBe(true);
@@ -34,7 +39,7 @@ describe("JWT Configuration - JTI Requirement", () => {
     it("should accept 'true' value", async () => {
       process.env.JWT_REQUIRE_JTI = "true";
 
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       const config = validateJwtConfig();
 
       expect(config.requireJti).toBe(true);
@@ -45,7 +50,7 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       const config = validateJwtConfig();
 
       expect(config.requireJti).toBe(false);
@@ -66,7 +71,7 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       // Import will throw because validation happens on module load
       await expect(async () => {
-        await import("../../src/server/auth.js");
+        await import("../../src/security/auth.js");
       }).rejects.toThrow(/JWT_REQUIRE_JTI must be "true" or "false"/);
     });
 
@@ -75,14 +80,14 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       // Import will throw because validation happens on module load
       await expect(async () => {
-        await import("../../src/server/auth.js");
+        await import("../../src/security/auth.js");
       }).rejects.toThrow(/JWT_REQUIRE_JTI must be "true" or "false"/);
     });
 
     it("should default to true for empty string", async () => {
       process.env.JWT_REQUIRE_JTI = "";
 
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
 
       // Empty string after trim should default to true
       const config = validateJwtConfig();
@@ -92,7 +97,7 @@ describe("JWT Configuration - JTI Requirement", () => {
     it("should handle whitespace in values", async () => {
       process.env.JWT_REQUIRE_JTI = "  true  ";
 
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       const config = validateJwtConfig();
 
       expect(config.requireJti).toBe(true);
@@ -103,7 +108,7 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       // Import will throw because validation happens on module load
       await expect(async () => {
-        await import("../../src/server/auth.js");
+        await import("../../src/security/auth.js");
       }).rejects.toThrow(/JWT_REQUIRE_JTI must be "true" or "false"/);
     });
   });
@@ -115,7 +120,7 @@ describe("JWT Configuration - JTI Requirement", () => {
       delete process.env.JWT_REQUIRED_SCOPE;
       delete process.env.JWT_ALLOWED_ALGS;
 
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       const config = validateJwtConfig();
 
       expect(config.requireJti).toBe(true);
@@ -126,7 +131,7 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       const config = validateJwtConfig();
 
       expect(config.requireJti).toBe(false);
@@ -141,7 +146,7 @@ describe("JWT Configuration - JTI Requirement", () => {
       process.env.JWT_ALLOWED_ALGS = "RS256,ES256";
       process.env.JWT_ACCEPTED_CLOCK_SKEW_SEC = "120";
 
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       const config = validateJwtConfig();
 
       expect(config.requireJti).toBe(true);
@@ -151,7 +156,7 @@ describe("JWT Configuration - JTI Requirement", () => {
     });
 
     it("should include requireJti in config object", async () => {
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       const config = validateJwtConfig();
 
       expect(config).toHaveProperty("requireJti");
@@ -165,7 +170,7 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       validateJwtConfig();
 
       expect(consoleSpy).toHaveBeenCalledWith(
@@ -183,7 +188,7 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       validateJwtConfig();
 
       expect(consoleSpy).not.toHaveBeenCalled();
@@ -197,7 +202,7 @@ describe("JWT Configuration - JTI Requirement", () => {
       process.env.JWT_REQUIRE_JTI = "invalid";
 
       await expect(async () => {
-        await import("../../src/server/auth.js");
+        await import("../../src/security/auth.js");
       }).rejects.toThrow();
     });
 
@@ -206,7 +211,7 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       // Import will throw because validation happens on module load
       await expect(async () => {
-        await import("../../src/server/auth.js");
+        await import("../../src/security/auth.js");
       }).rejects.toThrow(/JWT configuration validation failed/);
     });
   });
@@ -215,7 +220,7 @@ describe("JWT Configuration - JTI Requirement", () => {
     it("should handle undefined vs empty string", async () => {
       // Undefined - should default to true
       delete process.env.JWT_REQUIRE_JTI;
-      const { validateJwtConfig: validate1 } = await import("../../src/server/auth.js");
+      const { validateJwtConfig: validate1 } = await import("../../src/security/auth.js");
       const config1 = validate1();
       expect(config1.requireJti).toBe(true);
 
@@ -228,7 +233,7 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       // Empty string after trim - should default to true
       process.env.JWT_REQUIRE_JTI = "   ";
-      const { validateJwtConfig: validate2 } = await import("../../src/server/auth.js");
+      const { validateJwtConfig: validate2 } = await import("../../src/security/auth.js");
       const config2 = validate2();
       expect(config2.requireJti).toBe(true);
     });
@@ -238,7 +243,7 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       const config = validateJwtConfig();
 
       expect(config.requireJti).toBe(false);
@@ -253,7 +258,7 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       // Import will throw because validation happens on module load
       await expect(async () => {
-        await import("../../src/server/auth.js");
+        await import("../../src/security/auth.js");
       }).rejects.toThrow(/JWT_REQUIRE_JTI must be "true" or "false", got: 1/);
     });
 
@@ -263,14 +268,14 @@ describe("JWT Configuration - JTI Requirement", () => {
 
       // Import will throw because validation happens on module load
       await expect(async () => {
-        await import("../../src/server/auth.js");
+        await import("../../src/security/auth.js");
       }).rejects.toThrow(/JWT configuration validation failed/);
     });
   });
 
   describe("Type Safety", () => {
     it("should have requireJti as boolean type in config", async () => {
-      const { validateJwtConfig } = await import("../../src/server/auth.js");
+      const { validateJwtConfig } = await import("../../src/security/auth.js");
       const config = validateJwtConfig();
 
       // Type check
