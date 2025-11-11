@@ -352,7 +352,6 @@ export declare const searchPayloadSchema: z.ZodObject<{
         timeoutMs?: number | undefined;
     }>>;
 }, "strip", z.ZodTypeAny, {
-    filter?: any;
     options?: {
         scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
@@ -376,8 +375,8 @@ export declare const searchPayloadSchema: z.ZodObject<{
         sortOrder?: "ASC" | "DESC" | undefined;
         timeoutMs?: number | undefined;
     } | undefined;
+    filter?: any;
 }, {
-    filter?: any;
     options?: {
         scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
@@ -401,5 +400,6 @@ export declare const searchPayloadSchema: z.ZodObject<{
         sortOrder?: "ASC" | "DESC" | undefined;
         timeoutMs?: number | undefined;
     } | undefined;
+    filter?: any;
 }>;
 //# sourceMappingURL=hardening.d.ts.map
