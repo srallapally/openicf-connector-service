@@ -23,6 +23,11 @@ export declare class TokenReplayCache {
      * Store a token identifier with TTL based on token expiry
      * @param identifier - Token unique identifier (JTI or fallback hash)
      * @param expEpochSec - Token expiration time in seconds since epoch
+     *
+     * CRITICAL FIX: Added hard TTL cap (1 hour max) to prevent cache exhaustion.
+     * With long-lived tokens (24h), cache would be filled before actual expiry,
+     * allowing LRU eviction and replay attacks.
+     * @see https://github.com/srallapally/openicf-connector-service/security
      */
     put(identifier: string, expEpochSec: number): void;
     /**

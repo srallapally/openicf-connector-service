@@ -43,6 +43,7 @@ export declare const createPayloadSchema: z.ZodObject<{
         sortOrder: z.ZodOptional<z.ZodEnum<["ASC", "DESC"]>>;
         timeoutMs: z.ZodOptional<z.ZodNumber>;
     }, "strip", z.ZodTypeAny, {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -55,7 +56,6 @@ export declare const createPayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -65,6 +65,7 @@ export declare const createPayloadSchema: z.ZodObject<{
         sortOrder?: "ASC" | "DESC" | undefined;
         timeoutMs?: number | undefined;
     }, {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -77,7 +78,6 @@ export declare const createPayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -90,6 +90,7 @@ export declare const createPayloadSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     attrs: Record<string, any>;
     options?: {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -102,7 +103,6 @@ export declare const createPayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -115,6 +115,7 @@ export declare const createPayloadSchema: z.ZodObject<{
 }, {
     attrs: Record<string, any>;
     options?: {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -127,7 +128,6 @@ export declare const createPayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -175,6 +175,7 @@ export declare const updatePayloadSchema: z.ZodObject<{
         sortOrder: z.ZodOptional<z.ZodEnum<["ASC", "DESC"]>>;
         timeoutMs: z.ZodOptional<z.ZodNumber>;
     }, "strip", z.ZodTypeAny, {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -187,7 +188,6 @@ export declare const updatePayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -197,6 +197,7 @@ export declare const updatePayloadSchema: z.ZodObject<{
         sortOrder?: "ASC" | "DESC" | undefined;
         timeoutMs?: number | undefined;
     }, {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -209,7 +210,6 @@ export declare const updatePayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -222,6 +222,7 @@ export declare const updatePayloadSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     attrs: Record<string, any>;
     options?: {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -234,7 +235,6 @@ export declare const updatePayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -247,6 +247,7 @@ export declare const updatePayloadSchema: z.ZodObject<{
 }, {
     attrs: Record<string, any>;
     options?: {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -259,7 +260,6 @@ export declare const updatePayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -307,6 +307,7 @@ export declare const searchPayloadSchema: z.ZodObject<{
         sortOrder: z.ZodOptional<z.ZodEnum<["ASC", "DESC"]>>;
         timeoutMs: z.ZodOptional<z.ZodNumber>;
     }, "strip", z.ZodTypeAny, {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -319,7 +320,6 @@ export declare const searchPayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -329,6 +329,7 @@ export declare const searchPayloadSchema: z.ZodObject<{
         sortOrder?: "ASC" | "DESC" | undefined;
         timeoutMs?: number | undefined;
     }, {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -341,7 +342,6 @@ export declare const searchPayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -352,7 +352,9 @@ export declare const searchPayloadSchema: z.ZodObject<{
         timeoutMs?: number | undefined;
     }>>;
 }, "strip", z.ZodTypeAny, {
+    filter?: any;
     options?: {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -365,7 +367,6 @@ export declare const searchPayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -375,9 +376,10 @@ export declare const searchPayloadSchema: z.ZodObject<{
         sortOrder?: "ASC" | "DESC" | undefined;
         timeoutMs?: number | undefined;
     } | undefined;
-    filter?: any;
 }, {
+    filter?: any;
     options?: {
+        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         attributesToGet?: string[] | undefined;
         pageSize?: number | undefined;
         pagedResultsOffset?: number | undefined;
@@ -390,7 +392,6 @@ export declare const searchPayloadSchema: z.ZodObject<{
             objectClass: string;
             uid: string;
         } | null | undefined;
-        scope?: "OBJECT" | "ONE_LEVEL" | "SUBTREE" | undefined;
         totalPagedResultsPolicy?: "NONE" | "ESTIMATE" | "EXACT" | undefined;
         runAsUser?: string | null | undefined;
         runWithPassword?: string | null | undefined;
@@ -400,6 +401,5 @@ export declare const searchPayloadSchema: z.ZodObject<{
         sortOrder?: "ASC" | "DESC" | undefined;
         timeoutMs?: number | undefined;
     } | undefined;
-    filter?: any;
 }>;
 //# sourceMappingURL=hardening.d.ts.map
