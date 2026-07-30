@@ -95,7 +95,7 @@ export class RemoteConnectorService {
 
     private populateFacades() {
         for (const inst of this.opts.registry.list()) {
-            this.facades.set(inst.id, new ConnectorFacade(inst.impl));
+            this.facades.set(inst.id, new ConnectorFacade(inst.impl, inst.id));
         }
     }
 
@@ -107,7 +107,7 @@ export class RemoteConnectorService {
         let facade = this.facades.get(id);
         if (!facade) {
             const inst = this.opts.registry.get(id);
-            facade = new ConnectorFacade(inst.impl);
+            facade = new ConnectorFacade(inst.impl, inst.id);
             this.facades.set(id, facade);
         }
         return facade;

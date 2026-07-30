@@ -3,16 +3,29 @@ import { CircuitBreaker } from "../infra/CircuitBreaker.js";
 import { makeCache } from "../infra/Cache.js";
 import type { ResultsHandler, SearchResult } from "../spi/icf-compat.js";
 
-const cache = makeCache();
 const key = (parts: any[]) => parts.map(p => JSON.stringify(p)).join("|");
 
 export class ConnectorFacade {
-  constructor(private impl: any, private breaker = new CircuitBreaker()) {}
+  /**
+   * Result cache scoped to this facade instance.
+   *
+   * Previously a module-level cache shared by every facade. Because the key
+   * prefix came from `impl.id`, which the framework never sets, all connectors
+   * collided under the literal "anon" and one connector could be served
+   * another's cached objects.
+   */
+  private readonly cache = makeCache();
+
+  constructor(
+      private impl: any,
+      private connectorId: string = "anon",
+      private breaker = new CircuitBreaker(),
+  ) {}
 
   private invalidateCache(parts: any[]) {
       const prefix = key(parts);
-      for (const entryKey of cache.keys()) {
-          if (entryKey.startsWith(prefix)) cache.delete(entryKey);
+      for (const entryKey of this.cache.keys()) {
+          if (entryKey.startsWith(prefix)) this.cache.delete(entryKey);
       }
   }
 
@@ -25,48 +38,45 @@ export class ConnectorFacade {
   }
 
   async schema() {
-        const k = key(["schema", this.impl.id ?? "anon"]);
-        if (cache.has(k)) return cache.get(k);
+        const k = key(["schema", this.connectorId]);
+        if (this.cache.has(k)) return this.cache.get(k);
         const s = await this.call(() =>
             this.impl.schema
                 ? this.impl.schema()
                 : Promise.resolve({ objectClasses: [], features: { complexAttributes: true } })
         );
-        cache.set(k, s, { ttl: 5 * 60_000 });
+        this.cache.set(k, s, { ttl: 5 * 60_000 });
         return s;
   }
 
     async create(objectClass: string, attrs: Record<string, any>, options?: OperationOptions) {
         if (!this.impl.create) throw new Error("Create not supported");
         const res = await this.call(() => this.impl.create(objectClass, attrs, options));
-        const connectorId = this.impl.id ?? "anon";
-        this.invalidateCache(["schema", connectorId]);
-        this.invalidateCache(["get", connectorId, objectClass]);
+        this.invalidateCache(["schema", this.connectorId]);
+        this.invalidateCache(["get", this.connectorId, objectClass]);
         return res;
     }
 
     async get(objectClass: string, uid: string, options?: OperationOptions) {
         if (!this.impl.get) throw new Error("Get not supported");
-        const k = key(["get", this.impl.id ?? "anon", objectClass, uid, options?.attributesToGet?.slice().sort() || []]);
-        if (cache.has(k)) return cache.get(k);
+        const k = key(["get", this.connectorId, objectClass, uid, options?.attributesToGet?.slice().sort() || []]);
+        if (this.cache.has(k)) return this.cache.get(k);
         const obj = await this.call(() => this.impl.get(objectClass, uid, options));
-        if (obj) cache.set(k, obj, { ttl: 30_000 });
+        if (obj) this.cache.set(k, obj, { ttl: 30_000 });
         return obj;
     }
 
     async update(objectClass: string, uid: string, attrs: Record<string, any>, options?: OperationOptions) {
         if (!this.impl.update) throw new Error("Update not supported");
         const res = await this.call(() => this.impl.update(objectClass, uid, attrs, options));
-        const connectorId = this.impl.id ?? "anon";
-        this.invalidateCache(["get", connectorId, objectClass, uid]);
+        this.invalidateCache(["get", this.connectorId, objectClass, uid]);
         return res;
     }
 
     async delete(objectClass: string, uid: string, options?: OperationOptions) {
         if (!this.impl.delete) throw new Error("Delete not supported");
         const r = await this.call(() => this.impl.delete(objectClass, uid, options));
-        const connectorId = this.impl.id ?? "anon";
-        this.invalidateCache(["get", connectorId, objectClass, uid]);
+        this.invalidateCache(["get", this.connectorId, objectClass, uid]);
         return r;
     }
 
