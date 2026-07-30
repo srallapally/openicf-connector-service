@@ -15,6 +15,12 @@ openicf-connector-service/
 │   └── websocket/   # @openicf/connector-websocket  — deployable WebSocket service
 ```
 
+`packages/websocket/src/security/` contains Express middlewares — `auth.ts`
+(JWT bearer verification), `csrf.ts` and `hardening.ts`. They are retained and
+tested for the server side of the WebSocket protocol, which lives outside this
+repository. **No in-repo server mounts them**: this package is an outbound
+client that dials a remote control plane.
+
 ## Build & Run
 
 ```bash

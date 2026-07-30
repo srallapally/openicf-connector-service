@@ -11,8 +11,7 @@ openicf-connector-service/      <- workspace root
 ├── packages/
 │   ├── core/                   <- @openicf/connector-core  (this package)
 │   └── websocket/              <- @openicf/connector-websocket  (deployable WS server)
-├── src/                        <- legacy root-level utilities (not built)
-└── test/                       <- legacy root-level tests (not built)
+└── package.json                <- workspace root
 ```
 
 `packages/websocket` depends on `packages/core` via `file:../core`. Core is a transport-independent library; websocket is the deployable binary.
