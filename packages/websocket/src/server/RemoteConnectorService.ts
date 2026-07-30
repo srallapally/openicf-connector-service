@@ -3,7 +3,6 @@ import type {IncomingMessage} from "node:http";
 import { ConnectorRegistry, ConnectorFacade } from '@openicf/connector-core';
 import type { OperationOptions } from '@openicf/connector-core/spi';
 import { RateLimiter } from '@openicf/connector-core/infra';
-import { loadCsrfConfig, validateWebSocketOrigin } from "../security/csrf.js";
 import { OAuthTokenProvider } from "./OAuthTokenProvider.js";
 
 type JsonObject = Record<string, unknown>;
@@ -187,9 +186,6 @@ export class RemoteConnectorService {
     }
 
     private establishWebSocket(token: string, tokenExpiresAt: number) {
-        // CSRF Protection Enhancement: Load CSRF config for WebSocket Origin validation
-        const csrfConfig = loadCsrfConfig();
-
         const ws = new WebSocket(this.opts.serverUrl, {
             headers: { Authorization: `Bearer ${token}` },
         });
@@ -234,22 +230,6 @@ export class RemoteConnectorService {
 
         ws.on("unexpected-response", (req: IncomingMessage, res: IncomingMessage) => {
             console.error(`[ws] unexpected response: ${res.statusCode}`);
-
-            // CSRF Protection Enhancement: Validate Origin header during WebSocket handshake
-            // This prevents cross-origin WebSocket connections from malicious sites
-            const originHeader = req.headers.origin;
-            const hostHeader = req.headers.host;
-
-            if (!validateWebSocketOrigin(originHeader, csrfConfig, hostHeader)) {
-                console.error(
-                    `[ws-csrf] WebSocket connection rejected due to invalid origin: ` +
-                    `origin=${originHeader}, host=${hostHeader}`
-                );
-                res.resume();
-                ws.close();
-                if (!this.shuttingDown) this.scheduleReconnect();
-                return;
-            }
 
             if (res.statusCode === 401 || res.statusCode === 403) this.opts.oauth.invalidate();
             res.resume();
