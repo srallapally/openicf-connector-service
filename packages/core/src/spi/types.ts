@@ -105,9 +105,21 @@ export interface GetOp {
 }
 
 /**
- * SearchOp — single signature that supports both list and streaming forms:
- * - If the 3rd arg is a function => streaming (ResultsHandler) and resolves to SearchResult
- * - Otherwise => options and resolves to an array payload
+ * SearchOp — single signature that supports both list and streaming forms.
+ *
+ * Which form is in use is declared by {@link SearchCapability.searchStreaming},
+ * never inferred from the function's arity. `Function.length` counts only the
+ * parameters before the first defaulted or rest parameter, so it misclassifies
+ * in both directions: a list-style `search(objectClass, filter, options)`
+ * reports 3 and was misread as streaming, while a streaming
+ * `search(objectClass, filter, ...args)` reports 2 and was misread as a list.
+ * Destructuring alone does not lower the count -- `({a})` is 1, and only a
+ * default makes it 0, as in `({a} = {})`.
+ *
+ * - `searchStreaming === true`  => the 3rd arg is a {@link ResultsHandler} and
+ *   the call resolves to a {@link SearchResult}.
+ * - otherwise                   => the 3rd arg is {@link OperationOptions} and
+ *   the call resolves to an array payload.
  */
 export interface SearchOp {
   search(
@@ -116,6 +128,16 @@ export interface SearchOp {
       handlerOrOptions?: ResultsHandler | OperationOptions,
       options?: OperationOptions
   ): Promise<{ results: ConnectorObject[]; nextOffset?: number } | SearchResult>;
+}
+
+/**
+ * Opt-in declaration that `search` uses the streaming form.
+ *
+ * Connectors that omit it are treated as list-style, so existing list
+ * connectors need no change. A streaming connector MUST set this to `true`.
+ */
+export interface SearchCapability {
+  searchStreaming?: boolean | undefined;
 }
 
 export interface SchemaOp { schema(): Promise<Schema>; }
@@ -141,6 +163,7 @@ export type ConnectorSpi =
         DeleteOp &
         GetOp &
         SearchOp &
+        SearchCapability &
         SchemaOp &
         TestOp &
         SyncOp &

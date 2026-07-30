@@ -91,9 +91,14 @@ export class ConnectorFacade {
     }
 
     async search(objectClass: string, filter: any, options?: OperationOptions) {
-        if (typeof this.impl.search === "function" && this.impl.search.length >= 3) {
+        // Streaming is an explicit opt-in. It used to be inferred from
+        // `search.length >= 3`, which misread any list-style connector that
+        // named its options parameter and handed it a ResultsHandler instead.
+        if (typeof this.impl.search === "function" && this.impl.searchStreaming === true) {
             const out: any[] = [];
-            const handler: ResultsHandler = (obj) => { out.push(obj); return true; };
+            const limit = options?.pageSize ?? Infinity;
+            // Returning false tells the connector to stop producing results.
+            const handler: ResultsHandler = (obj) => { out.push(obj); return out.length < limit; };
             const sr: SearchResult = await this.call(() =>
                 (this.impl as any).search(objectClass, filter, handler, options)
             );
