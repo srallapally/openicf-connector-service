@@ -1,0 +1,96 @@
+# .github/workflows/release-websocket.yml
+#
+# Triggered by a tag of the form websocket-v<semver> (e.g. websocket-v1.0.0).
+# Builds the container image and pushes it to the GitHub Container Registry
+# (GHCR) at ghcr.io/<owner>/<repo>/websocket:<version>.
+#
+# To cut a release:
+#   git tag websocket-v1.0.0 && git push origin websocket-v1.0.0
+name: release-websocket
+
+on:
+  push:
+    tags:
+      - "websocket-v*"
+
+permissions:
+  contents: write    # create GitHub Release
+  packages: write    # push to GHCR
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}/websocket
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: meta
+        run: |
+          VERSION=$(echo "${{ github.ref_name }}" | sed 's/^websocket-v//')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/websocket/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:latest
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "websocket ${{ github.ref_name }}"
+          body: |
+            ## @governance-connector-framework/websocket ${{ github.ref_name }}
+
+            ### Container image
+
+            ```
+            docker pull ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ```
+
+            ### Required environment variables
+
+            | Variable | Description |
+            |---|---|
+            | `REMOTE_CONNECTOR_WS_URL` | WebSocket URL of the remote control plane |
+            | `OAUTH_TOKEN_URL` | Token endpoint for client_credentials grant |
+            | `OAUTH_CLIENT_ID` | OAuth client ID |
+            | `OAUTH_CLIENT_SECRET` | OAuth client secret |
+
+            ### Quick start
+
+            ```bash
+            docker run --rm \
+              -e REMOTE_CONNECTOR_WS_URL=wss://control-plane.example.com/ws \
+              -e OAUTH_TOKEN_URL=https://auth.example.com/oauth2/token \
+              -e OAUTH_CLIENT_ID=my-client \
+              -e OAUTH_CLIENT_SECRET=my-secret \
+              ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ```
