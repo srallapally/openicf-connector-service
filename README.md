@@ -6,20 +6,34 @@
 - **ICF parity**: Configuration.validate(), OperationOptions, streaming SearchOp, optional extra ops (`AuthenticateOp`, `BatchOp`, `UpdateAttributeValuesOp`, `ScriptOnResourceOp`, event subscriptions)
 - **Complex attributes supported** (ICF extension)
 
+## Monorepo Structure
+
+```
+openicf-connector-service/
+├── packages/
+│   ├── core/        # @openicf/connector-core  — transport-independent library
+│   └── websocket/   # @openicf/connector-websocket  — deployable WebSocket service
+```
+
 ## Build & Run
+
 ```bash
 npm ci
 npm run build
 
-# point to compiled external connectors dir
-node dist/server/index.js --connectors ../external-connectors/dist
-# or
-CONNECTORS_DIR=../external-connectors/dist node dist/server/index.js
+# Run the compiled WebSocket service
+node packages/websocket/dist/index.js --connectors /path/to/connectors
+
+# Or run via tsx during development
+cd packages/websocket && npx tsx src/index.ts --connectors /path/to/connectors
+
+# Or use the package dev script
+cd packages/websocket && npm run dev
 ```
 
 ## Remote WebSocket Connector Service
 
-The project now ships with a WebSocket-based runtime that connects to a remote
+The project ships a WebSocket-based runtime that connects to a remote
 control plane using OAuth client credentials. The service authenticates during
 the WebSocket handshake and keeps the session alive, allowing the remote server
 to issue connector operations (create/update/delete/search, etc.) over the
@@ -36,16 +50,6 @@ socket.
 | `OAUTH_AUDIENCE` / `OAUTH_RESOURCE` (optional) | Additional audience/resource parameters. |
 | `CONNECTORS_DIR` (optional) | Directory containing external connector manifests. |
 
-### Run
-
-```bash
-# assumes build output exists in dist/
-node dist/server/websocket.js --connectors ../external-connectors/dist
-
-# or run directly via tsx during development
-npx tsx src/server/websocket.ts --connectors ../external-connectors/dist
-```
-
 On startup the WebSocket service loads external connectors, acquires an OAuth
 access token, and establishes a WebSocket session. The control plane can:
 
@@ -54,10 +58,3 @@ access token, and establishes a WebSocket session. The control plane can:
 - Invoke connector operations (`create`, `update`, `delete`, `search`,
   `schema`, `test`, `sync`, `addAttributeValues`, `removeAttributeValues`,
   `scriptOnConnector`, etc.) and receive JSON responses.
-
-## UpdateAttributeValues endpoints
-- `POST /connectors/{id}/{objectClass}/{uid}/_addAttributeValues` — body: `{ "attrs": { ... }, "options": { ... } }`
-- `POST /connectors/{id}/{objectClass}/{uid}/_removeAttributeValues` — body: `{ "attrs": { ... }, "options": { ... } }`
-
-## Sync endpoint
-- `POST /connectors/{id}/_sync` — returns **501** if connector doesn't implement SyncOp.

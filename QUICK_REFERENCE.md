@@ -45,18 +45,17 @@ import {
 // 1. Create registry
 const registry = new ConnectorRegistry();
 
-// 2. Register connector (inline)
-registry.registerFactory('my-connector', async (config) => ({
+// 2. Register connector factory (type, version, factory)
+registry.registerFactory('my-connector', '1.0.0', async (config) => ({
   async test() { console.log('Testing...'); },
-  async schema() { return { objectClasses: [...] }; },
+  async schema() { return { objectClasses: [] }; },
   async create(objectClass, attrs) { return 'uid-123'; },
-  async get(objectClass, uid) { return { uid, ... }; },
+  async get(objectClass, uid) { return { uid, objectClass, attributes: {} }; },
   async search(objectClass, filter, handler) { /* ... */ },
-  // ... other operations
 }));
 
-// 3. Initialize instance
-await registry.initInstance('conn1', 'my-connector', {
+// 3. Initialize instance (id, type, version, config)
+await registry.initInstance('conn1', 'my-connector', '1.0.0', {
   host: 'example.com',
   port: 389,
 });
@@ -99,10 +98,10 @@ import {
 // Infrastructure
 import {
   CircuitBreaker,
-  Cache,
+  makeCache,
   RateLimiter,
-  Pool
-} from '@openicf/connector-core/infrastructure';
+  makePool
+} from '@openicf/connector-core/infra';
 
 // Types
 import type {
@@ -117,8 +116,7 @@ import type {
 // Filter utilities
 import {
   parseFilter,
-  validateFilter,
-  filterToSql
+  toSql
 } from '@openicf/connector-core/filter';
 
 // External loader
@@ -150,11 +148,10 @@ npx openicf-websocket --connectors /path/to/connectors
 ### Programmatic Usage
 
 ```typescript
-import {
-  RemoteConnectorService,
-  OAuthTokenProvider
-} from '@openicf/connector-websocket';
+import { main } from '@openicf/connector-websocket';
 import { ConnectorRegistry } from '@openicf/connector-core';
+import { RemoteConnectorService } from '../server/RemoteConnectorService.js';
+import { OAuthTokenProvider } from '../server/OAuthTokenProvider.js';
 
 // 1. Setup registry
 const registry = new ConnectorRegistry();
@@ -258,7 +255,7 @@ import { ConnectorRegistry, ConnectorFacade } from '@openicf/connector-core';
 
 const registry = new ConnectorRegistry();
 
-registry.registerFactory('simple', async (config) => ({
+registry.registerFactory('simple', '1.0.0', async (config) => ({
   async test() { /* test connection */ },
   async schema() { /* return schema */ },
   async create(objectClass, attrs, options) { /* create */ },
@@ -266,7 +263,6 @@ registry.registerFactory('simple', async (config) => ({
   async update(objectClass, uid, attrs, options) { /* update */ },
   async delete(objectClass, uid, options) { /* delete */ },
   async search(objectClass, filter, handler, options) {
-    // Stream results
     for (const item of items) {
       const shouldContinue = handler(item);
       if (!shouldContinue) break;
@@ -274,23 +270,18 @@ registry.registerFactory('simple', async (config) => ({
   },
 }));
 
-await registry.initInstance('simple1', 'simple', { /* config */ });
+await registry.initInstance('simple1', 'simple', '1.0.0', { /* config */ });
 const facade = new ConnectorFacade(registry.get('simple1').impl);
 ```
 
 ### Pattern 2: Connector with Configuration
 
 ```typescript
-import { Configuration } from '@openicf/connector-core/spi';
+import type { Configuration } from '@openicf/connector-core/spi';
 
-class MyConnectorConfig extends Configuration {
-  @ConfigurationProperty({ required: true, displayName: 'Host' })
+class MyConnectorConfig implements Configuration {
   host: string = '';
-
-  @ConfigurationProperty({ required: true, displayName: 'Port' })
   port: number = 389;
-
-  @ConfigurationProperty({ confidential: true })
   password: string = '';
 
   async validate() {
@@ -301,7 +292,7 @@ class MyConnectorConfig extends Configuration {
   }
 }
 
-registry.registerConfigBuilder('my-connector', async (raw) => {
+registry.registerConfigBuilder('my-connector', '1.0.0', async (raw) => {
   const config = new MyConnectorConfig();
   Object.assign(config, raw);
   return config;
@@ -311,24 +302,23 @@ registry.registerConfigBuilder('my-connector', async (raw) => {
 ### Pattern 3: Connector with Schema
 
 ```typescript
-import { buildSchema } from '@openicf/connector-core/spi';
+import type { Schema, ObjectClassInfo } from '@openicf/connector-core/spi';
 
-registry.registerFactory('with-schema', async (config) => ({
-  async schema() {
-    return buildSchema(b => {
-      b.defineObjectClass('account', oc => {
-        oc.addAttribute('username', { type: 'string', required: true });
-        oc.addAttribute('email', { type: 'string' });
-        oc.addAttribute('groups', { type: 'string', multiValued: true });
-        oc.supportCreate().supportUpdate().supportDelete().supportSearch();
-      });
-
-      b.defineObjectClass('group', oc => {
-        oc.addAttribute('name', { type: 'string', required: true });
-        oc.addAttribute('members', { type: 'string', multiValued: true });
-        oc.supportCreate().supportUpdate().supportDelete().supportSearch();
-      });
-    });
+registry.registerFactory('with-schema', '1.0.0', async (config) => ({
+  async schema(): Promise<Schema> {
+    return {
+      objectClasses: [
+        {
+          name: 'account',
+          supports: ['CREATE', 'UPDATE', 'DELETE', 'GET', 'SEARCH'],
+          attributes: [
+            { name: 'username', type: 'string', required: true },
+            { name: 'email', type: 'string' },
+            { name: 'groups', type: 'string', multiValued: true },
+          ],
+        } satisfies ObjectClassInfo,
+      ],
+    };
   },
   // ... other operations
 }));
@@ -337,7 +327,7 @@ registry.registerFactory('with-schema', async (config) => ({
 ### Pattern 4: Using Circuit Breaker Directly
 
 ```typescript
-import { CircuitBreaker } from '@openicf/connector-core/infrastructure';
+import { CircuitBreaker } from '@openicf/connector-core/infra';
 
 const cb = new CircuitBreaker({
   failureThreshold: 5,
@@ -359,15 +349,13 @@ console.log(cb.getStats()); // { failures, successes, ... }
 ### Pattern 5: Using Cache Directly
 
 ```typescript
-import { Cache } from '@openicf/connector-core/infrastructure';
+import { makeCache } from '@openicf/connector-core/infra';
 
-const cache = new Cache<string>({
-  maxSize: 1000,
-  ttlMs: 60000, // 1 minute
-});
+// makeCache() returns an LRUCache with max 10,000 entries and 60s TTL
+const cache = makeCache();
 
 cache.set('key', 'value');
-const value = cache.get('key'); // 'value' or undefined if expired
+const value = cache.get('key'); // 'value' or undefined if expired/evicted
 cache.delete('key');
 cache.clear();
 ```
@@ -375,7 +363,7 @@ cache.clear();
 ### Pattern 6: Using Rate Limiter Directly
 
 ```typescript
-import { RateLimiter } from '@openicf/connector-core/infrastructure';
+import { RateLimiter } from '@openicf/connector-core/infra';
 
 // Token bucket: 10 tokens/sec, burst capacity of 50
 const limiter = new RateLimiter(50, 10);
@@ -405,7 +393,7 @@ packages/core/
 │   │   ├── ConnectorRegistry.ts
 │   │   ├── ConnectorFacade.ts
 │   │   └── index.ts
-│   ├── infrastructure/
+│   ├── infra/
 │   │   ├── CircuitBreaker.ts
 │   │   ├── Cache.ts
 │   │   ├── RateLimiter.ts
@@ -420,10 +408,10 @@ packages/core/
 │   ├── filter/
 │   │   ├── ast.ts
 │   │   ├── validate.ts
-│   │   ├── sql.ts
-│   │   └── index.ts
+│   │   └── sql.ts
 │   ├── loader/
 │   │   ├── ExternalLoader.ts
+│   │   ├── types.ts
 │   │   └── index.ts
 │   └── index.ts
 ├── test/
@@ -438,8 +426,7 @@ packages/websocket/
 ├── src/
 │   ├── server/
 │   │   ├── RemoteConnectorService.ts
-│   │   ├── OAuthTokenProvider.ts
-│   │   └── index.ts
+│   │   └── OAuthTokenProvider.ts
 │   ├── security/
 │   │   ├── auth.ts
 │   │   ├── csrf.ts
@@ -496,7 +483,7 @@ const uid = await facade.create('account', {
 
 ```typescript
 const account = await facade.get('account', uid);
-console.log(account.attributes);
+console.log(account?.attributes);
 ```
 
 ### Update Object
@@ -602,7 +589,7 @@ import type {
 ### Implementing a Connector
 
 ```typescript
-import type { ConnectorSpi } from '@openicf/connector-core/spi';
+import type { ConnectorSpi, Schema, ConnectorObject, OperationOptions } from '@openicf/connector-core/spi';
 
 class MyConnector implements ConnectorSpi {
   async test(): Promise<void> { /* ... */ }
@@ -625,7 +612,7 @@ describe('MyConnector', () => {
   it('should create and retrieve account', async () => {
     const registry = new ConnectorRegistry();
 
-    registry.registerFactory('test', async () => ({
+    registry.registerFactory('test', '1.0.0', async () => ({
       async test() {},
       async schema() { return { objectClasses: [] }; },
       async create(objectClass, attrs) {
@@ -636,7 +623,7 @@ describe('MyConnector', () => {
       },
     }));
 
-    await registry.initInstance('test1', 'test', {});
+    await registry.initInstance('test1', 'test', '1.0.0', {});
     const facade = new ConnectorFacade(registry.get('test1').impl);
 
     const uid = await facade.create('account', { username: 'test' });
@@ -696,24 +683,6 @@ echo $OAUTH_CLIENT_ID
 ```
 
 **Solution**: The WebSocket service limits messages to 5/sec sustained, 20 burst. Slow down requests or adjust rate limiter configuration.
-
-## Migration Checklist
-
-- [ ] Install core package: `npm install @openicf/connector-core`
-- [ ] Update imports to use new package: `import { ... } from '@openicf/connector-core'`
-- [ ] Replace HTTP calls with direct facade calls (if migrating to local)
-- [ ] Update connector factory registrations
-- [ ] Test all operations
-- [ ] Update documentation
-- [ ] Deploy and verify
-
-## Additional Resources
-
-- **Design Document**: `DESIGN_SPLIT_ARCHITECTURE.md` - Detailed architecture
-- **Implementation Plan**: `IMPLEMENTATION_PLAN.md` - Step-by-step migration
-- **Visual Guide**: `ARCHITECTURE_VISUAL.md` - Diagrams and comparisons
-- **Examples**: See `examples/` directory (if available)
-- **Tests**: See `packages/*/test/` for usage examples
 
 ## Quick Links
 

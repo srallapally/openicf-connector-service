@@ -45,24 +45,28 @@ packages/
 │   ├── src/
 │   │   ├── registry/
 │   │   │   ├── ConnectorRegistry.ts
-│   │   │   ├── ConnectorInstance.ts
-│   │   │   └── ConnectorFacade.ts
-│   │   ├── infrastructure/
+│   │   │   ├── ConnectorFacade.ts
+│   │   │   └── index.ts
+│   │   ├── infra/
 │   │   │   ├── CircuitBreaker.ts
 │   │   │   ├── Cache.ts
 │   │   │   ├── RateLimiter.ts
-│   │   │   └── Pool.ts
+│   │   │   ├── Pool.ts
+│   │   │   └── index.ts
 │   │   ├── spi/
 │   │   │   ├── types.ts
 │   │   │   ├── icf-compat.ts
 │   │   │   ├── configuration.ts
-│   │   │   └── schema.ts
+│   │   │   ├── schema.ts
+│   │   │   └── index.ts
 │   │   ├── filter/
 │   │   │   ├── ast.ts
 │   │   │   ├── validate.ts
 │   │   │   └── sql.ts
 │   │   ├── loader/
-│   │   │   └── ExternalLoader.ts
+│   │   │   ├── ExternalLoader.ts
+│   │   │   ├── types.ts
+│   │   │   └── index.ts
 │   │   └── index.ts               # Public API exports
 │   ├── test/
 │   ├── package.json
@@ -72,9 +76,7 @@ packages/
 │   ├── src/
 │   │   ├── server/
 │   │   │   ├── RemoteConnectorService.ts
-│   │   │   ├── OAuthTokenProvider.ts
-│   │   │   ├── MessageProtocol.ts
-│   │   │   └── index.ts
+│   │   │   └── OAuthTokenProvider.ts
 │   │   ├── security/
 │   │   │   ├── auth.ts            # JWT validation
 │   │   │   ├── csrf.ts            # CSRF protection
@@ -99,7 +101,7 @@ Provides the core connector framework, operation execution, and infrastructure c
 // Core Registry & Facade
 export { ConnectorRegistry } from './registry/ConnectorRegistry.js';
 export { ConnectorFacade } from './registry/ConnectorFacade.js';
-export type { ConnectorInstance } from './registry/ConnectorInstance.js';
+export type { ConnectorInstance } from './registry/ConnectorRegistry.js';
 
 // SPI - Service Provider Interface
 export type {
@@ -130,31 +132,32 @@ export type {
   AttributeFilter,
 } from './spi/types.js';
 
-export type {
-  Configuration,
-  ConfigurationProperty,
-} from './spi/configuration.js';
+export type { Configuration } from './spi/configuration.js';
+export { requireNonEmpty } from './spi/configuration.js';
 
-export {
-  buildSchema,
-  SchemaBuilder,
-  ObjectClassInfoBuilder,
-  AttributeInfoBuilder,
+// Schema types (no builder utilities — construct Schema objects directly)
+export type {
+  AttrType,
+  AttributeInfo,
+  ObjectClassInfo,
+  Schema,
 } from './spi/schema.js';
 
 // Infrastructure Components
-export { CircuitBreaker } from './infrastructure/CircuitBreaker.js';
-export { Cache } from './infrastructure/Cache.js';
-export { RateLimiter } from './infrastructure/RateLimiter.js';
-export { Pool } from './infrastructure/Pool.js';
+export { CircuitBreaker } from './infra/CircuitBreaker.js';
+export { makeCache, type Cache } from './infra/Cache.js';
+export { RateLimiter } from './infra/RateLimiter.js';
+export { makePool, type Pooled } from './infra/Pool.js';
 
 // External Connector Loading
 export { loadExternalConnectors } from './loader/ExternalLoader.js';
+export type { Manifest, InstanceDef, Instances, ConnectorKey } from './loader/types.js';
+export { toConnectorKey, parseConnectorKey } from './loader/types.js';
 
 // Filter Utilities
-export { parseFilter, validateFilter } from './filter/validate.js';
-export { filterToSql } from './filter/sql.js';
-export type { FilterNode } from './filter/ast.js';
+export { parseFilter } from './filter/validate.js';
+export { toSql, type ColumnMap } from './filter/sql.js';
+export type * from './filter/ast.js';
 ```
 
 ### Dependencies
@@ -185,8 +188,8 @@ import {
 // Create registry
 const registry = new ConnectorRegistry();
 
-// Option 1: Register inline connector
-registry.registerFactory('my-connector', async (config) => {
+// Option 1: Register inline connector (type, version, factory)
+registry.registerFactory('my-connector', '1.0.0', async (config) => {
   return {
     async test() { /* ... */ },
     async schema() { /* ... */ },
@@ -196,7 +199,8 @@ registry.registerFactory('my-connector', async (config) => {
   };
 });
 
-await registry.initInstance('conn1', 'my-connector', {
+// initInstance signature: (id, type, version, config)
+await registry.initInstance('conn1', 'my-connector', '1.0.0', {
   host: 'ldap.example.com',
   port: 389,
   // ... config
@@ -241,20 +245,13 @@ WebSocket server that connects to a remote control plane, receives connector ope
 ### Public API Surface
 
 ```typescript
-// Main service
-export { RemoteConnectorService } from './server/RemoteConnectorService.js';
-export type { RemoteConnectorServiceOptions } from './server/RemoteConnectorService.js';
-
-// OAuth
-export { OAuthTokenProvider } from './server/OAuthTokenProvider.js';
-export type { OAuthOptions } from './server/OAuthTokenProvider.js';
-
-// Security utilities (optional exports for advanced use)
-export { validateJwt } from './security/auth.js';
-export { validateWebSocketOrigin } from './security/csrf.js';
-
-// CLI entry point
+// CLI entry point (only public export from the package entry)
 export { main } from './index.js';
+
+// Internal modules — not re-exported from the package root; import directly if needed:
+// import { RemoteConnectorService } from '@openicf/connector-websocket/dist/server/RemoteConnectorService.js'
+// import { OAuthTokenProvider } from '@openicf/connector-websocket/dist/server/OAuthTokenProvider.js'
+// import { requireJwt } from '@openicf/connector-websocket/dist/security/auth.js'
 ```
 
 ### Dependencies
@@ -497,19 +494,27 @@ node dist/index.js --connectors /path/to/connectors
 ```json
 {
   "name": "openicf-connector-workspace",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
+  "type": "module",
   "workspaces": [
     "packages/*"
   ],
+  "engines": {
+    "node": ">=20.12.0"
+  },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present"
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
   },
   "devDependencies": {
+    "@types/node": "^22.5.0",
     "typescript": "^5.6.2",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "eslint": "^9.10.0",
+    "tsx": "^4.16.2"
   }
 }
 ```
@@ -530,9 +535,9 @@ node dist/index.js --connectors /path/to/connectors
       "import": "./dist/registry/index.js",
       "types": "./dist/registry/index.d.ts"
     },
-    "./infrastructure": {
-      "import": "./dist/infrastructure/index.js",
-      "types": "./dist/infrastructure/index.d.ts"
+    "./infra": {
+      "import": "./dist/infra/index.js",
+      "types": "./dist/infra/index.d.ts"
     },
     "./spi": {
       "import": "./dist/spi/index.js",
@@ -541,6 +546,10 @@ node dist/index.js --connectors /path/to/connectors
     "./filter": {
       "import": "./dist/filter/index.js",
       "types": "./dist/filter/index.d.ts"
+    },
+    "./loader": {
+      "import": "./dist/loader/index.js",
+      "types": "./dist/loader/index.d.ts"
     }
   },
   "engines": {
@@ -588,18 +597,25 @@ node dist/index.js --connectors /path/to/connectors
     "test": "vitest run"
   },
   "dependencies": {
-    "@openicf/connector-core": "workspace:*",
-    "ws": "^8.18.0",
-    "jose": "^5.3.0",
+    "@openicf/connector-core": "file:../core",
     "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
+    "jose": "^5.3.0",
+    "ws": "^8.18.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/ws": "^8.5.12",
     "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.19",
+    "@types/express-rate-limit": "^5.1.3",
     "@types/node": "^22.5.0",
-    "typescript": "^5.6.2",
+    "@types/supertest": "^2.0.16",
+    "@types/ws": "^8.5.12",
+    "supertest": "^7.0.0",
     "tsx": "^4.16.2",
+    "typescript": "^5.6.2",
     "vitest": "^3.2.4"
   }
 }

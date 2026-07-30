@@ -32,139 +32,49 @@ However, **11 security issues** and **7 performance issues** were identified req
 
 ## Part 1: Critical & High Severity Security Issues
 
-### 🔴 CRITICAL: Weak Fallback Token Identifier Hash
+### ✅ ~~CRITICAL: Weak Fallback Token Identifier Hash~~ — FIXED
 
-**File:** `packages/websocket/src/security/auth.ts:265-281`
-**Issue:** Fallback token identifier uses non-cryptographic 32-bit hash instead of SHA-256
+**File:** `packages/websocket/src/security/auth.ts` (approx. lines 303–313)
+**Was:** Fallback token identifier used a non-cryptographic 32-bit hash.
+**Fix applied:** `generateFallbackIdentifier` now uses `createHash('sha256')` from Node `crypto`.
 
 ```typescript
-// VULNERABLE: Simple hash function (not cryptographic)
-let hash = 0;
-for (let i = 0; i < data.length; i++) {
-  const char = data.charCodeAt(i);
-  hash = ((hash << 5) - hash) + char;
-  hash = hash & hash; // 32-bit integer
-}
-return `fallback:${sub}:${iat}:${Math.abs(hash).toString(36)}`;
+// CURRENT CODE (fixed)
+const hash = createHash("sha256").update(data).digest("hex");
+return `fallback:${hash}`;
 ```
-
-**Attack Vector:** Attacker could predict or forge token identifiers, bypassing replay protection when JTI is not present.
-
-**Recommendation:**
-```typescript
-// SECURE: Use cryptographic hash
-import { createHash } from 'crypto';
-
-function generateFallbackIdentifier(payload: JWTPayload): string {
-  const sub = payload.sub || "";
-  const iat = payload.iat || 0;
-  const aud = Array.isArray(payload.aud) ? payload.aud.join(",") : (payload.aud || "");
-
-  const hash = createHash('sha256')
-    .update(`${sub}|${iat}|${aud}`)
-    .digest('hex');
-
-  return `fallback:${hash}`;
-}
-```
-
-**Priority:** Implement immediately before production deployment
 
 ---
 
-### 🔴 HIGH: Insufficient Token Replay Cache Cleanup
+### ✅ ~~HIGH: Insufficient Token Replay Cache Cleanup~~ — FIXED
 
-**File:** `packages/websocket/src/security/auth.ts:40-47`
-**Issue:** Cache TTL based solely on token expiration (up to 24 hours per line 294), risking memory exhaustion
+**File:** `packages/websocket/src/security/auth.ts` (approx. lines 46–56)
+**Was:** Cache TTL inherited raw token expiry (up to 24 hours), risking LRU eviction and replay.
+**Fix applied:** TTL is now capped at 1 hour regardless of token lifetime.
 
 ```typescript
-// PROBLEMATIC: 24-hour token lifetime means 24-hour cache TTL
-put(identifier: string, expEpochSec: number): void {
-  const now = Math.floor(Date.now() / 1000);
-  const ttlSeconds = expEpochSec - now;  // Could be 86,400 seconds!
-
-  if (ttlSeconds > 0) {
-    this.cache.set(identifier, true, { ttl: ttlSeconds * 1000 });
-  }
-}
+// CURRENT CODE (fixed)
+const cappedTtlSeconds = Math.min(ttlSeconds, 3600);
+this.cache.set(identifier, true, { ttl: cappedTtlSeconds * 1000 });
 ```
 
-**Impact:**
-- 10,000-entry cache filled with 24-hour tokens → LRU eviction possible
-- Evicted tokens can be replayed before actual expiry
-- Under high load (300 req/min), cache fills in ~33 minutes
-
-**Recommendation:**
-```typescript
-// SECURE: Hard TTL cap + monitoring
-put(identifier: string, expEpochSec: number): void {
-  const now = Math.floor(Date.now() / 1000);
-  const ttlSeconds = expEpochSec - now;
-
-  // Cap at 1 hour, regardless of token lifetime
-  const maxTtlSeconds = Math.min(ttlSeconds, 3600);
-
-  if (maxTtlSeconds > 0) {
-    this.cache.set(identifier, true, { ttl: maxTtlSeconds * 1000 });
-  }
-}
-
-// Add monitoring
-getStats() {
-  return {
-    size: this.cache.size,
-    maxSize: this.maxSize,
-    utilization: this.cache.size / this.maxSize,
-  };
-}
-```
-
-**Additional Actions:**
-- Reduce `maxAge` in JWT verification from 24h to 8h
-- Add monitoring alert if cache utilization > 80%
+**Still open:** Consider reducing `maxAge` in JWT verification from 24h to 8h, and add cache utilization monitoring.
 
 ---
 
-### 🔴 HIGH: Weak Bearer Token Parsing
+### ✅ ~~HIGH: Weak Bearer Token Parsing~~ — FIXED
 
-**File:** `packages/websocket/src/security/auth.ts:240-245`
-**Issue:** Multiple issues: case-insensitive comparison, whitespace handling, no length validation
+**File:** `packages/websocket/src/security/auth.ts` (approx. lines 260–281)
+**Was:** Case-insensitive `!=` comparison, `.trim()` allowing whitespace, no length validation.
+**Fix applied:** Strict `startsWith("Bearer ")` prefix check, length bounds (20–2048), whitespace rejection.
 
 ```typescript
-// VULNERABLE CODE
-function parseAuthHeader(req: Request): string | null {
-  const h = req.headers.authorization;
-  if (!h) return null;
-  const [type, val] = h.split(" ");
-  if (!type || !val || type.toLowerCase() != "bearer") return null;  // Case-insensitive!
-  return val.trim();  // Allows whitespace in tokens!
-}
-```
-
-**Issues:**
-1. `!=` instead of `!==` (type coercion vulnerability)
-2. `.trim()` could allow `"Bearer    token   "` → breaks token canonicalization
-3. No length validation before processing
-
-**Recommendation:**
-```typescript
-// SECURE CODE
-function parseAuthHeader(req: Request): string | null {
-  const h = req.headers.authorization;
-  if (!h) return null;
-
-  // Validate exact format: "Bearer <token>"
-  if (!h.startsWith("Bearer ")) return null;
-
-  const token = h.slice(7);  // Remove "Bearer " prefix
-
-  // Validate token format (no whitespace, reasonable length)
-  if (/\s/.test(token) || token.length < 20 || token.length > 2048) {
-    return null;
-  }
-
-  return token;
-}
+// CURRENT CODE (fixed)
+if (!h.startsWith("Bearer ")) return null;
+const token = h.slice(7);
+if (!token || token.length < 20 || token.length > 2048) return null;
+if (/\s/.test(token)) return null;
+return token;
 ```
 
 ---
@@ -235,39 +145,15 @@ runWithPassword: z.string().max(1024).nullable().optional(),  // Reduce to 1KB
 
 ---
 
-### 🟠 HIGH: CSRF Token Cookie Missing HTTPOnly Protection
+### ✅ ~~HIGH: CSRF Token Cookie Missing HTTPOnly Protection~~ — FIXED
 
-**File:** `packages/websocket/src/security/csrf.ts:301-319`
-**Issue:** CSRF token cookie has `httpOnly: false`, allowing JavaScript access
+**File:** `packages/websocket/src/security/csrf.ts` (approx. line 310)
+**Was:** CSRF cookie had `httpOnly: false`, allowing XSS to steal the token.
+**Fix applied:** Cookie is now set with `httpOnly: true`. Token is returned in the response body for JavaScript consumption.
 
 ```typescript
-// VULNERABLE: Token readable by JavaScript
-res.cookie(config.cookieName, token, {
-  httpOnly: false,  // ← Security issue
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "strict",
-  maxAge: 24 * 60 * 60 * 1000,
-});
-```
-
-**Justification Given (Incorrect):** "Must be readable by JavaScript for double-submit pattern"
-
-**Reality:** In double-submit pattern, JavaScript reads token from response body, NOT cookie.
-
-**Attack Vector:** XSS vulnerability → steal token from JavaScript memory
-
-**Recommendation:**
-```typescript
-// SECURE: HTTPOnly enabled
-res.cookie(config.cookieName, token, {
-  httpOnly: true,  // ← CHANGE THIS
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "strict",
-  maxAge: 24 * 60 * 60 * 1000,
-});
-
-// Token still sent in response body for JavaScript
-res.json({ token });
+// CURRENT CODE (fixed)
+httpOnly: true,  // CRITICAL FIX: Enable HTTPOnly to protect against XSS
 ```
 
 ---
@@ -393,16 +279,14 @@ Current max (10,000) will cause LRU eviction
 
 ## Part 5: Remediation Roadmap
 
-### Phase 1: Critical (Immediate - Before Production)
+### Phase 1: Critical — ✅ All Implemented
 
-| Issue | Effort | Impact |
-|-------|--------|--------|
-| Fix weak fallback token hash | 1 hour | CRITICAL |
-| Add cache TTL cap | 2 hours | CRITICAL |
-| Enable HTTPOnly for CSRF cookie | 30 mins | CRITICAL |
-| Fix Bearer token parser strictness | 1 hour | HIGH |
-
-**Estimated Effort:** 4.5 hours | **Risk Reduction:** 80%
+| Issue | Status |
+|-------|--------|
+| Fix weak fallback token hash | ✅ Fixed (SHA-256) |
+| Add cache TTL cap | ✅ Fixed (1 hour cap) |
+| Enable HTTPOnly for CSRF cookie | ✅ Fixed |
+| Fix Bearer token parser strictness | ✅ Fixed (strict prefix + length validation) |
 
 ### Phase 2: High Priority (Next Sprint)
 
@@ -448,7 +332,7 @@ Current max (10,000) will cause LRU eviction
 | **Rate Limiting** | 8/10 | Strong | Token bucket sound; cache sizing suboptimal |
 | **Error Handling** | 6/10 | Fair | Exposes internal details; needs sanitization |
 | **Logging** | 6/10 | Fair | Basic console logging; needs structure |
-| **Test Coverage** | 7/10 | Good | 152 test files; gaps in error paths |
+| **Test Coverage** | 7/10 | Good | ~11 project test files across both packages; gaps in error paths |
 
 **Overall: 7.3/10** - Good foundation; production-ready with Phase 1 fixes
 
@@ -458,10 +342,10 @@ Current max (10,000) will cause LRU eviction
 
 Before deploying to production:
 
-- [ ] **CRITICAL:** Fix weak fallback token hash (use SHA-256)
-- [ ] **CRITICAL:** Add cache TTL cap (1 hour max)
-- [ ] **CRITICAL:** Enable HTTPOnly on CSRF cookie
-- [ ] **HIGH:** Fix Bearer token parser (`!==` instead of `!=`, length validation)
+- [x] **CRITICAL:** Fix weak fallback token hash (use SHA-256) — ✅ Done
+- [x] **CRITICAL:** Add cache TTL cap (1 hour max) — ✅ Done
+- [x] **CRITICAL:** Enable HTTPOnly on CSRF cookie — ✅ Done
+- [x] **HIGH:** Fix Bearer token parser (strict `startsWith`, length validation) — ✅ Done
 - [ ] **HIGH:** Reduce clock skew to 30-60 seconds
 - [ ] Reduce input validation limits (5KB strings, not 20KB)
 - [ ] Configure certificate pinning for OAuth provider
