@@ -111,4 +111,41 @@ export class ConnectorRegistry {
     return Array.from(this.instances.values());
   }
 
+  /**
+   * Dispose one instance and remove it from the registry. Never throws.
+   *
+   * An unknown id is a silent no-op, matching the tolerance of `has()` and
+   * `getSpi()` rather than the throwing behaviour of `get()`. This is
+   * deliberate: disposal is teardown, and teardown should not fail because
+   * something was already gone.
+   *
+   * The instance is removed in a `finally`, so it leaves the map whether
+   * `dispose()` resolves, rejects, or is absent entirely. That removal-always
+   * rule is what makes `disposeAll()` inherently idempotent.
+   */
+  async disposeInstance(id: string): Promise<void> {
+    const inst = this.instances.get(id);
+    if (!inst) return;
+    try {
+      await inst.impl.dispose?.();
+    } catch (e) {
+      console.error(`[registry] dispose failed for instance ${id}: ${(e as Error).message}`);
+    } finally {
+      this.instances.delete(id);
+    }
+  }
+
+  /**
+   * Dispose every instance. Second call iterates an empty map (no-op).
+   *
+   * Sequential rather than `Promise.all`: connectors may share process-level
+   * resources and nothing requires parallel teardown. Keys are snapshotted
+   * before iterating so the intent is unambiguous while entries are deleted.
+   */
+  async disposeAll(): Promise<void> {
+    for (const id of Array.from(this.instances.keys())) {
+      await this.disposeInstance(id);
+    }
+  }
+
 }
