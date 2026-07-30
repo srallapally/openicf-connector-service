@@ -31,34 +31,34 @@ function resolveEnvStrings<T>(val: T): T {
   return val;
 }
 
-async function readInstancesJson(dir: string): Promise<Instances | null> {
+/**
+ * Read instances.json from a connector directory.
+ *
+ * An absent file is a normal configuration choice and returns null silently.
+ * A file that exists but cannot be parsed is an operator error and is logged
+ * with the reason, so a typo is distinguishable from "no file". Either way the
+ * loader falls through rather than throwing: a bad file in one connector must
+ * not stop the others.
+ */
+async function readInstancesJson(dir: string, manifestId: string): Promise<Instances | null> {
+  let txt: string;
   try {
-    const txt = await fs.readFile(path.join(dir, "instances.json"), "utf8");
+    txt = await fs.readFile(path.join(dir, "instances.json"), "utf8");
+  } catch (e: any) {
+    if (e?.code !== "ENOENT") {
+      console.error(`[external] ${manifestId}: cannot read instances.json: ${e?.message || e}`);
+    }
+    return null;
+  }
+
+  try {
     const arr = JSON.parse(txt);
     if (!Array.isArray(arr)) throw new Error("instances.json must be an array");
     return arr as Instances;
-  } catch {
+  } catch (e: any) {
+    console.error(`[external] ${manifestId}: invalid instances.json: ${e?.message || e}`);
     return null;
   }
-}
-
-function readInstancesEnv(manifestId: string, type: string): Instances | null {
-  const byId = (process.env[`CONNECTOR_INSTANCES_${manifestId.toUpperCase()}`] ?? "").trim();
-  if (byId) {
-    const arr = JSON.parse(byId);
-    if (!Array.isArray(arr)) throw new Error("CONNECTOR_INSTANCES_<ID> must be a JSON array");
-    return arr as Instances;
-  }
-  const global = (process.env.CONNECTOR_INSTANCES ?? "").trim();
-  if (global) {
-    const arr = JSON.parse(global);
-    if (!Array.isArray(arr)) throw new Error("CONNECTOR_INSTANCES must be a JSON array");
-    return arr
-        .filter((x: any) => x && typeof x === "object")
-        .filter((x: any) => !x.type || x.type === type)
-        .map((x: any) => ({ id: x.id, config: x.config })) as Instances;
-  }
-  return null;
 }
 
 export async function loadExternalConnectors(connectorsDir: string, registry: ConnectorRegistry) {
@@ -116,10 +116,12 @@ export async function loadExternalConnectors(connectorsDir: string, registry: Co
         }
       }
 
-      // 3) Bootstrap instances from (a) manifest.instances, (b) instances.json, (c) ENV
+      // Bootstrap instances: manifest.instances wins if present, otherwise
+      // instances.json. The two are never merged -- a silent merge is exactly
+      // where duplicate instance ids would come from, and those are now a hard
+      // error at registration.
       let instances: Instances | null = manifest.instances ?? null;
-      //if (!instances) instances = await readInstancesJson(dir);
-      //if (!instances) instances = readInstancesEnv(manifest.id, manifest.type);
+      if (!instances) instances = await readInstancesJson(dir, manifest.id);
 
       if (!instances || instances.length === 0) {
         console.warn(`[external] ${manifest.id}: no instances defined`);
