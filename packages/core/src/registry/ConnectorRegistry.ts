@@ -72,17 +72,6 @@ export class ConnectorRegistry {
     this.instances.set(id, { id, type, connectorKey, config: configObj, impl: spi });
     return this.instances.get(id)!;
   }
-  /*
-   getVersions(type: string): string[] {
-        const versions: string[] = [];
-        for (const key of this.factories.keys()) {
-            if (key.startsWith(`${type}@`)) {
-                versions.push(key.split('@')[1]!);
-            }
-        }
-        return versions.sort();
-    }
-*/
     getVersions(type: string): string[] {
         return Array.from(this.factories.keys())
             .filter(k => k.startsWith(type + '@'))

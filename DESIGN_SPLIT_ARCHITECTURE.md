@@ -16,7 +16,11 @@ This document outlines the architectural design for splitting the `openicf-conne
 - **Local Invocation**: Enable direct local usage of connectors without network overhead
 - **Remote Invocation**: Support WebSocket-based remote connector operations
 
-## Current Architecture
+## Architecture Before the Split (historical)
+
+> This section records the pre-split layout for context. The split described
+> below has since been carried out, and the root-level `src/` and `test/` trees
+> no longer exist.
 
 ```
 openicf-connector-service/
@@ -31,7 +35,7 @@ openicf-connector-service/
 └── tsconfig.json
 ```
 
-**Current Entry Points:**
+**Entry points at that time:**
 - HTTP Server: `src/server/index.ts` (Express-based REST API)
 - WebSocket Client: `src/server/websocket.ts` (OAuth client connecting to control plane)
 

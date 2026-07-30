@@ -1,1 +1,0 @@
-{"version":3,"file":"configuration.d.ts","sourceRoot":"","sources":["../../src/spi/configuration.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,aAAa;IAC5B,QAAQ,IAAI,IAAI,GAAG,OAAO,CAAC,IAAI,CAAC,CAAC;CAClC;AAED,wBAAgB,eAAe,CAAC,IAAI,EAAE,MAAM,EAAE,CAAC,EAAE,OAAO,QAIvD"}

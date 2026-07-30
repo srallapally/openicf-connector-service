@@ -110,9 +110,9 @@ describe("CircuitBreaker in-flight accounting", () => {
     });
 });
 
-// Ported from the legacy root-level test/framework/circuit-breaker.test.ts,
-// which imports src/core/CircuitBreaker.js -- a path that no longer exists --
-// and is not run by any workspace. The root copy is left in place for #13.
+// Ported from the legacy root-level circuit-breaker test, which sat outside
+// every workspace and imported a path removed in the packages split, so it
+// never ran. That legacy tree is gone.
 describe("CircuitBreaker state machine", () => {
     const opts = {
         failureThreshold: 2,
