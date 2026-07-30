@@ -81,6 +81,7 @@ export class RemoteConnectorService {
     }
 
     async shutdown() {
+        if (this.shuttingDown) return;
         this.shuttingDown = true;
         this.stopTokenValidationCheck();
         if (this.reconnectHandle) {
@@ -90,6 +91,13 @@ export class RemoteConnectorService {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.close(1000, "shutdown");
         }
+        // Close the transport first, so no newly arriving operation dispatches
+        // onto a connector that is being torn down.
+        await this.opts.registry.disposeAll();
+        // A facade must never outlive its impl's disposal: getFacade() checks
+        // this map before the registry, so a stale entry would keep dispatching
+        // to a disposed connector.
+        this.facades.clear();
     }
 
     private populateFacades() {
