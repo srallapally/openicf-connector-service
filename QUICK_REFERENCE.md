@@ -1,11 +1,11 @@
-# OpenICF Connector Split - Quick Reference Guide
+# Governance Connector Framework - Quick Reference Guide
 
 ## TL;DR
 
 **Before**: Monolithic service - must use HTTP/WebSocket server for everything
 **After**: Two packages:
-- `@openicf/connector-core` - Use connectors locally (no server)
-- `@openicf/connector-websocket` - Remote connector service via WebSocket
+- `@governance-connector-framework/core` - Use connectors locally (no server)
+- `@governance-connector-framework/websocket` - Remote connector service via WebSocket
 
 ## Quick Decision Tree
 
@@ -13,25 +13,25 @@
 Do you need to use connectors?
 │
 ├─ YES, in the same process (local)
-│  └─ Use: @openicf/connector-core
-│     └─ npm install @openicf/connector-core
+│  └─ Use: @governance-connector-framework/core
+│     └─ npm install @governance-connector-framework/core
 │
 └─ YES, from remote clients (distributed)
-   └─ Use: @openicf/connector-websocket
-      └─ npm install @openicf/connector-websocket
+   └─ Use: @governance-connector-framework/websocket
+      └─ npm install @governance-connector-framework/websocket
 ```
 
 ## Installation
 
 ```bash
 # For local invocation
-npm install @openicf/connector-core
+npm install @governance-connector-framework/core
 
 # For remote WebSocket server
-npm install @openicf/connector-websocket
+npm install @governance-connector-framework/websocket
 ```
 
-## Core Package (@openicf/connector-core)
+## Core Package (@governance-connector-framework/core)
 
 ### Basic Usage
 
@@ -40,7 +40,7 @@ import {
   ConnectorRegistry,
   ConnectorFacade,
   loadExternalConnectors
-} from '@openicf/connector-core';
+} from '@governance-connector-framework/core';
 
 // 1. Create registry
 const registry = new ConnectorRegistry();
@@ -73,7 +73,7 @@ const results = await facade.search('account', null);
 ### Loading External Connectors
 
 ```typescript
-import { loadExternalConnectors } from '@openicf/connector-core';
+import { loadExternalConnectors } from '@governance-connector-framework/core';
 
 await loadExternalConnectors('/path/to/connectors', registry);
 
@@ -93,7 +93,7 @@ import {
   ConnectorRegistry,
   ConnectorFacade,
   type ConnectorInstance
-} from '@openicf/connector-core';
+} from '@governance-connector-framework/core';
 
 // Infrastructure
 import {
@@ -101,7 +101,7 @@ import {
   makeCache,
   RateLimiter,
   makePool
-} from '@openicf/connector-core/infra';
+} from '@governance-connector-framework/core/infra';
 
 // Types
 import type {
@@ -111,21 +111,21 @@ import type {
   OperationOptions,
   Schema,
   // ... all SPI types
-} from '@openicf/connector-core/spi';
+} from '@governance-connector-framework/core/spi';
 
 // Filter utilities
 import {
   parseFilter,
   toSql
-} from '@openicf/connector-core/filter';
+} from '@governance-connector-framework/core/filter';
 
 // External loader
 import {
   loadExternalConnectors
-} from '@openicf/connector-core/loader';
+} from '@governance-connector-framework/core/loader';
 ```
 
-## WebSocket Package (@openicf/connector-websocket)
+## WebSocket Package (@governance-connector-framework/websocket)
 
 ### CLI Usage
 
@@ -139,17 +139,17 @@ export OAUTH_SCOPE=connector:read,connector:write
 export CONNECTORS_DIR=/path/to/connectors
 
 # Run the service
-npx openicf-websocket
+npx gcf-websocket
 
 # Or with CLI flag
-npx openicf-websocket --connectors /path/to/connectors
+npx gcf-websocket --connectors /path/to/connectors
 ```
 
 ### Programmatic Usage
 
 ```typescript
-import { main } from '@openicf/connector-websocket';
-import { ConnectorRegistry } from '@openicf/connector-core';
+import { main } from '@governance-connector-framework/websocket';
+import { ConnectorRegistry } from '@governance-connector-framework/core';
 import { RemoteConnectorService } from '../server/RemoteConnectorService.js';
 import { OAuthTokenProvider } from '../server/OAuthTokenProvider.js';
 
@@ -221,7 +221,7 @@ process.on('SIGTERM', async () => {
 // Service info (on connect)
 {
   "type": "service-info",
-  "service": "openicf-connector-service",
+  "service": "governance-connector-framework",
   "startedAt": "2025-01-15T10:00:00Z",
   "connectors": ["ldap-connector", "db-connector"]
 }
@@ -251,7 +251,7 @@ process.on('SIGTERM', async () => {
 ### Pattern 1: Simple Connector
 
 ```typescript
-import { ConnectorRegistry, ConnectorFacade } from '@openicf/connector-core';
+import { ConnectorRegistry, ConnectorFacade } from '@governance-connector-framework/core';
 
 const registry = new ConnectorRegistry();
 
@@ -277,7 +277,7 @@ const facade = new ConnectorFacade(registry.get('simple1').impl);
 ### Pattern 2: Connector with Configuration
 
 ```typescript
-import type { Configuration } from '@openicf/connector-core/spi';
+import type { Configuration } from '@governance-connector-framework/core/spi';
 
 class MyConnectorConfig implements Configuration {
   host: string = '';
@@ -302,7 +302,7 @@ registry.registerConfigBuilder('my-connector', '1.0.0', async (raw) => {
 ### Pattern 3: Connector with Schema
 
 ```typescript
-import type { Schema, ObjectClassInfo } from '@openicf/connector-core/spi';
+import type { Schema, ObjectClassInfo } from '@governance-connector-framework/core/spi';
 
 registry.registerFactory('with-schema', '1.0.0', async (config) => ({
   async schema(): Promise<Schema> {
@@ -327,7 +327,7 @@ registry.registerFactory('with-schema', '1.0.0', async (config) => ({
 ### Pattern 4: Using Circuit Breaker Directly
 
 ```typescript
-import { CircuitBreaker } from '@openicf/connector-core/infra';
+import { CircuitBreaker } from '@governance-connector-framework/core/infra';
 
 const cb = new CircuitBreaker({
   failureThreshold: 5,
@@ -349,7 +349,7 @@ console.log(cb.getStats()); // { failures, successes, ... }
 ### Pattern 5: Using Cache Directly
 
 ```typescript
-import { makeCache } from '@openicf/connector-core/infra';
+import { makeCache } from '@governance-connector-framework/core/infra';
 
 // makeCache() returns an LRUCache with max 10,000 entries and 60s TTL
 const cache = makeCache();
@@ -363,7 +363,7 @@ cache.clear();
 ### Pattern 6: Using Rate Limiter Directly
 
 ```typescript
-import { RateLimiter } from '@openicf/connector-core/infra';
+import { RateLimiter } from '@governance-connector-framework/core/infra';
 
 // Token bucket: 10 tokens/sec, burst capacity of 50
 const limiter = new RateLimiter(50, 10);
@@ -583,13 +583,13 @@ import type {
   AndFilter,
   OrFilter,
   NotFilter,
-} from '@openicf/connector-core/spi';
+} from '@governance-connector-framework/core/spi';
 ```
 
 ### Implementing a Connector
 
 ```typescript
-import type { ConnectorSpi, Schema, ConnectorObject, OperationOptions } from '@openicf/connector-core/spi';
+import type { ConnectorSpi, Schema, ConnectorObject, OperationOptions } from '@governance-connector-framework/core/spi';
 
 class MyConnector implements ConnectorSpi {
   async test(): Promise<void> { /* ... */ }
@@ -606,7 +606,7 @@ class MyConnector implements ConnectorSpi {
 
 ```typescript
 import { describe, it, expect } from 'vitest';
-import { ConnectorRegistry, ConnectorFacade } from '@openicf/connector-core';
+import { ConnectorRegistry, ConnectorFacade } from '@governance-connector-framework/core';
 
 describe('MyConnector', () => {
   it('should create and retrieve account', async () => {
@@ -640,14 +640,14 @@ describe('MyConnector', () => {
 ### Issue: Module not found
 
 ```
-Error: Cannot find module '@openicf/connector-core'
+Error: Cannot find module '@governance-connector-framework/core'
 ```
 
 **Solution**: Install dependencies and build packages
 
 ```bash
 npm install
-npm run build -w @openicf/connector-core
+npm run build -w @governance-connector-framework/core
 ```
 
 ### Issue: Type errors
@@ -659,7 +659,7 @@ Type error: Cannot find type definitions
 **Solution**: Build core package first to generate `.d.ts` files
 
 ```bash
-npm run build -w @openicf/connector-core
+npm run build -w @governance-connector-framework/core
 ```
 
 ### Issue: WebSocket connection fails

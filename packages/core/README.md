@@ -1,4 +1,4 @@
-# @openicf/connector-core
+# @governance-connector-framework/core
 
 Transport-independent connector framework. This document covers how connector
 instances are configured, how environment substitution behaves, and how to
@@ -113,7 +113,7 @@ Opt-in wrapper for secrets held in memory. Nothing wraps values automatically â€
 wrap deliberately in your connector's `buildConfiguration`:
 
 ```ts
-import { GuardedString } from "@openicf/connector-core/spi";
+import { GuardedString } from "@governance-connector-framework/core/spi";
 
 export async function buildConfiguration(raw: any) {
   return {
