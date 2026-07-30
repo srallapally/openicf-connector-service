@@ -1,11 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
-// Set required environment variables before importing auth module
+// Type-only import: erased at compile time, so it does not execute auth.ts.
+import type { TokenReplayCache as TokenReplayCacheType } from "../src/security/auth.js";
+
+// Set required environment variables before importing auth module.
 process.env.JWT_JWKS_URI = "https://example.com/.well-known/jwks.json";
 process.env.JWT_EXPECTED_ISS = "https://example.com";
 process.env.JWT_EXPECTED_AUD = "test-audience";
 
-import { TokenReplayCache, JtiCache } from "../src/security/auth.js";
+// Must be a dynamic import: static ESM imports are hoisted above the
+// assignments above, so auth.ts would run validateJwtConfig() with no env set.
+const { TokenReplayCache, JtiCache } = await import("../src/security/auth.js");
 
 // Set up environment cleanup for tests
 const originalEnv = { ...process.env };
@@ -21,7 +26,7 @@ afterEach(() => {
 });
 
 describe("JTI Requirement - Replay Protection Fix", () => {
-  let cache: TokenReplayCache;
+  let cache: TokenReplayCacheType;
 
   beforeEach(() => {
     cache = new TokenReplayCache();
