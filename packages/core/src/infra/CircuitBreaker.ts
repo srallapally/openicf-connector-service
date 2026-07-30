@@ -26,16 +26,35 @@ export class CircuitBreaker {
     if (this.inflight >= this.opts.maxConcurrent) throw new Error("TooManyRequests");
 
     this.inflight++;
+
+    let p: Promise<T>;
+    try {
+      p = fn();
+    } catch (e) {
+      // fn threw synchronously: no promise ever existed, so nothing else will
+      // release the slot.
+      this.inflight--;
+      this.onFailure();
+      throw e;
+    }
+
+    // The slot is held until the underlying work settles, not until the race
+    // settles. A timeout abandons the result but the operation is still
+    // running, and maxConcurrent is meant to bound outstanding work.
+    //
+    // then(release, release) rather than finally(release): finally returns a
+    // new promise that rejects when p rejects, and nothing would handle it,
+    // creating an unhandled rejection this code does not currently have.
+    const release = () => { this.inflight--; };
+    p.then(release, release);
+
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const timeoutPromise = new Promise<never>((_, rej) => {
         timer = setTimeout(() => rej(new Error("BreakerTimeout")), this.opts.timeoutMs);
       });
 
-      const res = await Promise.race([
-        fn(),
-        timeoutPromise
-      ]);
+      const res = await Promise.race([p, timeoutPromise]);
       this.onSuccess();
       return res;
     } catch (e) {
@@ -43,7 +62,7 @@ export class CircuitBreaker {
       throw e;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
-      this.inflight--;
+      // No decrement here: release() owns it.
     }
   }
 
