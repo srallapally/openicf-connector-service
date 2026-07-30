@@ -10,7 +10,7 @@
     "node": ">=20.12.0"
   },
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build -w @governance-connector-framework/core && npm run build -w @governance-connector-framework/websocket",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present"
