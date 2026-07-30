@@ -32,6 +32,19 @@ export class ConnectorRegistry {
 
   async initInstance(id: string, type: string, version: string, rawConfig: ConnectorConfig) {
 
+    // Reject before building config: a rejected duplicate must not execute the
+    // new configuration's side effects. Overwriting silently orphaned the
+    // previous instance without ever running its lifecycle teardown.
+    const existing = this.instances.get(id);
+    if (existing) {
+      throw new Error(
+        `Connector instance '${id}' already registered as ` +
+        `${existing.connectorKey.type}@${existing.connectorKey.version}; ` +
+        `refusing to overwrite with ${type}@${version}. ` +
+        `Call disposeInstance('${id}') first to replace it.`
+      );
+    }
+
     const key = toConnectorKey(type, version);
     const factory = this.factories.get(key);
 
