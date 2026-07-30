@@ -1,21 +1,20 @@
 # Ignore node_modules directory
 node_modules/
 
-    # Ignore build output
-    dist/
-    build/
+# Ignore build output. Packages publish dist via their "files" field, which
+# reads from disk at pack time -- it does not need to be tracked in git.
+dist/
+build/
+*.tsbuildinfo
 
-    # Ignore IDE-specific files (e.g., WebStorm's .idea folder, but Git handles this automatically with a separate .idea/.gitignore)
-    # .idea/
+# Ignore IDE-specific files (e.g., WebStorm's .idea folder, but Git handles this automatically with a separate .idea/.gitignore)
+# .idea/
 
-    # Ignore log files
-    *.log
+# Ignore log files
+*.log
 
-    # Ignore temporary files
-    *.tmp
-
-# Explicitly include compiled dist folder (compiled output is committed)
-!/dist/
+# Ignore temporary files
+*.tmp
 
 # Note: node_modules/ is ignored (line 2) and should NEVER be committed
-# !/.env is commented out - .env files should not be committed for security
+# .env files should not be committed for security
