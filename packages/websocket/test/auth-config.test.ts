@@ -1,11 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
-// Set required environment variables before importing auth module
+// Type-only import: erased at compile time, so it does not execute auth.ts.
+import type { JwtConfig } from "../src/security/auth.js";
+
+// Set required environment variables before importing auth module.
 process.env.JWT_JWKS_URI = "https://example.com/.well-known/jwks.json";
 process.env.JWT_EXPECTED_ISS = "https://example.com";
 process.env.JWT_EXPECTED_AUD = "test-audience";
 
-import { validateJwtConfig, JwtConfig } from "../src/security/auth.js";
+// Must be a dynamic import: static ESM imports are hoisted above the
+// assignments above, so auth.ts would run validateJwtConfig() with no env set.
+const { validateJwtConfig } = await import("../src/security/auth.js");
 
 describe("JWT Config Validation", () => {
   // Store original env vars
