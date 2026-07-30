@@ -171,6 +171,7 @@ export type ConnectorSpi =
         ResolveUsernameOp &
         ValidateOp &
         // Optional advanced ops from icf-compat (imported by path with .js)
+        import("./icf-compat.js").ConnectorLifecycle &
         import("./icf-compat.js").AuthenticateOp &
         import("./icf-compat.js").BatchOp &
         import("./icf-compat.js").UpdateAttributeValuesOp &
