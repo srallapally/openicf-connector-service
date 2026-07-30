@@ -1,0 +1,63 @@
+# .github/workflows/release-core.yml
+#
+# Triggered by a tag of the form core-v<semver> (e.g. core-v1.6.0).
+# Builds the @governance-connector-framework/core package, packs it into a
+# tarball, and publishes the tarball as a GitHub Release asset.
+#
+# To cut a release:
+#   git tag core-v1.6.0 && git push origin core-v1.6.0
+name: release-core
+
+on:
+  push:
+    tags:
+      - "core-v*"
+
+permissions:
+  contents: write   # needed to create a GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build core
+        run: npm run build -w @governance-connector-framework/core
+
+      - name: Run tests
+        run: npm test -w @governance-connector-framework/core
+
+      - name: Pack tarball
+        id: pack
+        working-directory: packages/core
+        run: |
+          TARBALL=$(npm pack --json | jq -r '.[0].filename')
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "path=packages/core/$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "core ${{ github.ref_name }}"
+          body: |
+            ## @governance-connector-framework/core ${{ github.ref_name }}
+
+            Install via npm (once published to a registry):
+            ```
+            npm install @governance-connector-framework/core@$(echo "${{ github.ref_name }}" | sed 's/^core-v//')
+            ```
+
+            Or install directly from this release tarball:
+            ```
+            npm install https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.pack.outputs.tarball }}
+            ```
+          files: ${{ steps.pack.outputs.path }}
