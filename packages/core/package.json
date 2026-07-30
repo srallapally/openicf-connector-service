@@ -1,7 +1,7 @@
 {
-  "name": "@openicf/connector-core",
+  "name": "@governance-connector-framework/core",
   "version": "1.6.0",
-  "description": "OpenICF Connector Core Library - Transport-independent connector framework",
+  "description": "Governance Connector Framework Core Library - Transport-independent connector framework",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -47,7 +47,7 @@
     "lint": "eslint . || true"
   },
   "keywords": [
-    "openicf",
+    "governance",
     "connector",
     "identity",
     "provisioning"

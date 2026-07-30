@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { ConnectorRegistry } from '@openicf/connector-core';
-import { loadExternalConnectors } from '@openicf/connector-core/loader';
+import { ConnectorRegistry } from '@governance-connector-framework/core';
+import { loadExternalConnectors } from '@governance-connector-framework/core/loader';
 import { RemoteConnectorService } from './server/RemoteConnectorService.js';
 import { OAuthTokenProvider } from './server/OAuthTokenProvider.js';
 

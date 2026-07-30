@@ -1,18 +1,21 @@
-# ICF-Inspired Connector Service (Node/TypeScript)
+# Governance Connector Framework (Node/TypeScript)
+
+A transport-independent connector runtime for identity governance workflows.
+The SPI design draws on the OpenICF/ICF connector model.
 
 - External connector loader (pass `--connectors <dir>` at startup)
 - JWT Bearer auth, rate limits, secure headers
 - Circuit breaker, bounded caching, pool helper
-- **ICF parity**: Configuration.validate(), OperationOptions, streaming SearchOp, optional extra ops (`AuthenticateOp`, `BatchOp`, `UpdateAttributeValuesOp`, `ScriptOnResourceOp`, event subscriptions)
-- **Complex attributes supported** (ICF extension)
+- **ICF-compatible operations**: Configuration.validate(), OperationOptions, streaming SearchOp, optional extra ops (`AuthenticateOp`, `BatchOp`, `UpdateAttributeValuesOp`, `ScriptOnResourceOp`, event subscriptions)
+- **Complex attributes supported**
 
 ## Monorepo Structure
 
 ```
-openicf-connector-service/
+governance-connector-framework/
 ├── packages/
-│   ├── core/        # @openicf/connector-core  — transport-independent library
-│   └── websocket/   # @openicf/connector-websocket  — deployable WebSocket service
+│   ├── core/        # @governance-connector-framework/core  — transport-independent library
+│   └── websocket/   # @governance-connector-framework/websocket  — deployable WebSocket service
 ```
 
 `packages/websocket/src/security/` contains Express middlewares — `auth.ts`

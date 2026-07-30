@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { RemoteConnectorService } from "../src/server/RemoteConnectorService.js";
-import type { ConnectorRegistry } from "@openicf/connector-core";
+import type { ConnectorRegistry } from "@governance-connector-framework/core";
 import type { OAuthTokenProvider } from "../src/server/OAuthTokenProvider.js";
 
 /**

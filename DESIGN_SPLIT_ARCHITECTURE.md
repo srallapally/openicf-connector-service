@@ -1,11 +1,11 @@
-# OpenICF Connector Service - Split Architecture Design
+# Governance Connector Framework - Split Architecture Design
 
 ## Executive Summary
 
 This document outlines the architectural design for splitting the `openicf-connector-service` monolith into two independent packages:
 
-1. **`@openicf/connector-core`** - A reusable core library that provides connector management, operations, and infrastructure components that can be invoked locally
-2. **`@openicf/connector-websocket`** - A WebSocket server that uses the core library to provide remote connector invocation capabilities
+1. **`@governance-connector-framework/core`** - A reusable core library that provides connector management, operations, and infrastructure components that can be invoked locally
+2. **`@governance-connector-framework/websocket`** - A WebSocket server that uses the core library to provide remote connector invocation capabilities
 
 ## Goals
 
@@ -45,7 +45,7 @@ openicf-connector-service/
 
 ```
 packages/
-├── core/                           # @openicf/connector-core
+├── core/                           # @governance-connector-framework/core
 │   ├── src/
 │   │   ├── registry/
 │   │   │   ├── ConnectorRegistry.ts
@@ -76,7 +76,7 @@ packages/
 │   ├── package.json
 │   └── tsconfig.json
 │
-├── websocket/                      # @openicf/connector-websocket
+├── websocket/                      # @governance-connector-framework/websocket
 │   ├── src/
 │   │   ├── server/
 │   │   │   ├── RemoteConnectorService.ts
@@ -90,11 +90,11 @@ packages/
 │   ├── package.json
 │   └── tsconfig.json
 │
-└── http/                           # @openicf/connector-http (optional future)
+└── http/                           # @governance-connector-framework/http (optional future)
     └── [HTTP REST API implementation]
 ```
 
-## Package 1: @openicf/connector-core
+## Package 1: @governance-connector-framework/core
 
 ### Purpose
 Provides the core connector framework, operation execution, and infrastructure components. Can be embedded in any application for local connector invocation.
@@ -187,7 +187,7 @@ import {
   ConnectorRegistry,
   ConnectorFacade,
   loadExternalConnectors
-} from '@openicf/connector-core';
+} from '@governance-connector-framework/core';
 
 // Create registry
 const registry = new ConnectorRegistry();
@@ -241,7 +241,7 @@ const results = await facade.search('account', null, { pageSize: 100 });
 - **Type-safe**: Full TypeScript support
 - **Testable**: Easy to unit test without network dependencies
 
-## Package 2: @openicf/connector-websocket
+## Package 2: @governance-connector-framework/websocket
 
 ### Purpose
 WebSocket server that connects to a remote control plane, receives connector operation requests, and executes them using the core library.
@@ -253,9 +253,9 @@ WebSocket server that connects to a remote control plane, receives connector ope
 export { main } from './index.js';
 
 // Internal modules — not re-exported from the package root; import directly if needed:
-// import { RemoteConnectorService } from '@openicf/connector-websocket/dist/server/RemoteConnectorService.js'
-// import { OAuthTokenProvider } from '@openicf/connector-websocket/dist/server/OAuthTokenProvider.js'
-// import { requireJwt } from '@openicf/connector-websocket/dist/security/auth.js'
+// import { RemoteConnectorService } from '@governance-connector-framework/websocket/dist/server/RemoteConnectorService.js'
+// import { OAuthTokenProvider } from '@governance-connector-framework/websocket/dist/server/OAuthTokenProvider.js'
+// import { requireJwt } from '@governance-connector-framework/websocket/dist/security/auth.js'
 ```
 
 ### Dependencies
@@ -263,7 +263,7 @@ export { main } from './index.js';
 ```json
 {
   "dependencies": {
-    "@openicf/connector-core": "workspace:*",
+    "@governance-connector-framework/core": "workspace:*",
     "ws": "^8.18.0",
     "jose": "^5.3.0",
     "cookie-parser": "^1.4.7",
@@ -285,11 +285,11 @@ export { main } from './index.js';
 import {
   RemoteConnectorService,
   OAuthTokenProvider
-} from '@openicf/connector-websocket';
+} from '@governance-connector-framework/websocket';
 import {
   ConnectorRegistry,
   loadExternalConnectors
-} from '@openicf/connector-core';
+} from '@governance-connector-framework/core';
 
 // Setup registry with connectors
 const registry = new ConnectorRegistry();
@@ -369,7 +369,7 @@ node dist/index.js --connectors /path/to/connectors
 // Service info (sent on connect)
 {
   type: "service-info",
-  service: "openicf-connector-service",
+  service: "governance-connector-framework",
   startedAt: "2025-01-15T10:00:00Z",
   connectors: ["ldap-connector", "db-connector"]
 }
@@ -497,7 +497,7 @@ node dist/index.js --connectors /path/to/connectors
 
 ```json
 {
-  "name": "openicf-connector-workspace",
+  "name": "governance-connector-framework-workspace",
   "version": "2.0.0",
   "private": true,
   "type": "module",
@@ -527,7 +527,7 @@ node dist/index.js --connectors /path/to/connectors
 
 ```json
 {
-  "name": "@openicf/connector-core",
+  "name": "@governance-connector-framework/core",
   "version": "1.0.0",
   "type": "module",
   "exports": {
@@ -579,11 +579,11 @@ node dist/index.js --connectors /path/to/connectors
 
 ```json
 {
-  "name": "@openicf/connector-websocket",
+  "name": "@governance-connector-framework/websocket",
   "version": "1.0.0",
   "type": "module",
   "bin": {
-    "openicf-websocket": "./dist/index.js"
+    "gcf-websocket": "./dist/index.js"
   },
   "exports": {
     ".": {
@@ -601,7 +601,7 @@ node dist/index.js --connectors /path/to/connectors
     "test": "vitest run"
   },
   "dependencies": {
-    "@openicf/connector-core": "file:../core",
+    "@governance-connector-framework/core": "file:../core",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "express-rate-limit": "^8.2.1",
@@ -700,13 +700,13 @@ node dist/index.js --connectors /path/to/connectors
 
 ## Future Enhancements
 
-### Package 3: @openicf/connector-http (Optional)
+### Package 3: @governance-connector-framework/http (Optional)
 
 A separate HTTP REST API server using the core library:
 
 ```typescript
-import { ConnectorRegistry } from '@openicf/connector-core';
-import { createHttpServer } from '@openicf/connector-http';
+import { ConnectorRegistry } from '@governance-connector-framework/core';
+import { createHttpServer } from '@governance-connector-framework/http';
 
 const registry = new ConnectorRegistry();
 // ... configure connectors ...
@@ -731,19 +731,19 @@ const server = createHttpServer({
 await server.start();
 ```
 
-### Package 4: @openicf/connector-cli (Optional)
+### Package 4: @governance-connector-framework/cli (Optional)
 
 Command-line interface for testing connectors:
 
 ```bash
 # Test connector
-openicf test my-connector --config config.json
+gcf test my-connector --config config.json
 
 # Run search
-openicf search my-connector account --filter "username eq 'jdoe'"
+gcf search my-connector account --filter "username eq 'jdoe'"
 
 # Get schema
-openicf schema my-connector
+gcf schema my-connector
 ```
 
 ## Risks & Mitigations

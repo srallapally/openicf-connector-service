@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is an npm workspace monorepo rooted at `../../` (two levels above this file). The working directory for Claude Code sessions is `packages/core`, but the full tree is:
 
 ```
-openicf-connector-service/      <- workspace root
+governance-connector-framework/     <- workspace root
 ├── packages/
-│   ├── core/                   <- @openicf/connector-core  (this package)
-│   └── websocket/              <- @openicf/connector-websocket  (deployable WS server)
+│   ├── core/                   <- @governance-connector-framework/core  (this package)
+│   └── websocket/              <- @governance-connector-framework/websocket  (deployable WS server)
 └── package.json                <- workspace root
 ```
 
@@ -58,7 +58,7 @@ cd packages/websocket && npm run dev
 
 ### Core package (`packages/core`)
 
-The `@openicf/connector-core` package has five sub-systems:
+The `@governance-connector-framework/core` package has five sub-systems:
 
 - **SPI types** (`src/spi/types.ts`) — interfaces for every connector operation (`CreateOp`, `UpdateOp`, `DeleteOp`, `GetOp`, `SearchOp`, `SchemaOp`, `TestOp`, `SyncOp`, `ScriptOnConnectorOp`). The `ConnectorSpi` union type is what a connector plugin must implement.
 - **Registry** (`src/registry/ConnectorRegistry.ts`) — stores connector factories keyed as `type@version`, resolves the best semver match, manages instance lifecycle.
@@ -72,7 +72,7 @@ The `@openicf/connector-core` package has five sub-systems:
 
 ### WebSocket package (`packages/websocket`)
 
-The `@openicf/connector-websocket` package is the deployable runtime. It connects **outbound** to a remote control plane WebSocket URL rather than exposing a server port.
+The `@governance-connector-framework/websocket` package is the deployable runtime. It connects **outbound** to a remote control plane WebSocket URL rather than exposing a server port.
 
 - **`RemoteConnectorService`** (`src/server/RemoteConnectorService.ts`) — manages the persistent WS connection; authenticates on connect via OAuth client_credentials; dispatches `ping`, `list-connectors`, and `operation` messages through the facade; rate-limits per-message; proactively reconnects 5 min before token expiry; exponential backoff on disconnect (1 s → 30 s).
 - **`OAuthTokenProvider`** (`src/server/OAuthTokenProvider.ts`) — client credentials grant with 30 s early-expiry caching.

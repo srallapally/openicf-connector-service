@@ -1,8 +1,8 @@
 import WebSocket, {type RawData} from "ws";
 import type {IncomingMessage} from "node:http";
-import { ConnectorRegistry, ConnectorFacade } from '@openicf/connector-core';
-import type { OperationOptions } from '@openicf/connector-core/spi';
-import { RateLimiter } from '@openicf/connector-core/infra';
+import { ConnectorRegistry, ConnectorFacade } from '@governance-connector-framework/core';
+import type { OperationOptions } from '@governance-connector-framework/core/spi';
+import { RateLimiter } from '@governance-connector-framework/core/infra';
 import { OAuthTokenProvider } from "./OAuthTokenProvider.js";
 
 type JsonObject = Record<string, unknown>;
@@ -259,7 +259,7 @@ export class RemoteConnectorService {
     private sendServiceInfo() {
         this.send({
             type: "service-info",
-            service: "openicf-connector-service",
+            service: "governance-connector-framework",
             startedAt: this.startedAt,
             connectors: this.listConnectors(),
         });

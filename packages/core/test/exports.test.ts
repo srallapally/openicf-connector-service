@@ -14,12 +14,12 @@ import { describe, it, expect } from "vitest";
  * stop resolving again.
  */
 const SUBPATHS: Array<[specifier: string, expectedExport: string]> = [
-    ["@openicf/connector-core", "ConnectorRegistry"],
-    ["@openicf/connector-core/registry", "ConnectorRegistry"],
-    ["@openicf/connector-core/infra", "CircuitBreaker"],
-    ["@openicf/connector-core/spi", "GuardedString"],
-    ["@openicf/connector-core/filter", "parseFilter"],
-    ["@openicf/connector-core/loader", "loadExternalConnectors"],
+    ["@governance-connector-framework/core", "ConnectorRegistry"],
+    ["@governance-connector-framework/core/registry", "ConnectorRegistry"],
+    ["@governance-connector-framework/core/infra", "CircuitBreaker"],
+    ["@governance-connector-framework/core/spi", "GuardedString"],
+    ["@governance-connector-framework/core/filter", "parseFilter"],
+    ["@governance-connector-framework/core/loader", "loadExternalConnectors"],
 ];
 
 describe("package export map", () => {
@@ -31,7 +31,7 @@ describe("package export map", () => {
     }
 
     it("filter subpath provides the whole filter surface", async () => {
-        const mod = await import("@openicf/connector-core/filter");
+        const mod = await import("@governance-connector-framework/core/filter");
         for (const name of ["parseFilter", "toSql", "and", "or", "not", "cmp"]) {
             expect(typeof mod[name]).toBe("function");
         }
