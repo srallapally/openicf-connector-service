@@ -177,7 +177,7 @@ declare global {
  * - Validates token length (no null/undefined tokens, reasonable bounds)
  * - Rejects whitespace in tokens (prevents canonicalization attacks)
  * - Prevents header injection and malformed bearer tokens
- * @see https://github.com/srallapally/openicf-connector-service/security
+ * @see https://github.com/srallapally/governance-connector-framework/security
  */
 function parseAuthHeader(req: Request): string | null {
   const h = req.headers.authorization;

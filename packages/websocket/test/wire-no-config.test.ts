@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { RemoteConnectorService } from "../src/server/RemoteConnectorService.js";
-import type { ConnectorRegistry } from "@openicf/connector-core";
+import type { ConnectorRegistry } from "@governance-connector-framework/core";
 import type { OAuthTokenProvider } from "../src/server/OAuthTokenProvider.js";
 
 const SECRET = "hunter2-do-not-ship";
@@ -38,6 +38,7 @@ describe("wire payloads carry no connector configuration", () => {
         expect(sent).toHaveLength(1);
         const payload = sent[0] as Record<string, unknown>;
         expect(payload.type).toBe("service-info");
+        expect(payload.service).toBe("governance-connector-framework");
         expect(payload.connectors).toEqual(["conn-a", "conn-b"]);
         expect(payload).not.toHaveProperty("config");
         expect(JSON.stringify(payload)).not.toContain(SECRET);

@@ -23,7 +23,7 @@ class FakeWS {
 vi.mock("ws", () => ({ default: FakeWS, WebSocket: FakeWS }));
 
 const { RemoteConnectorService } = await import("../src/server/RemoteConnectorService.js");
-import type { ConnectorRegistry } from "@openicf/connector-core";
+import type { ConnectorRegistry } from "@governance-connector-framework/core";
 import type { OAuthTokenProvider } from "../src/server/OAuthTokenProvider.js";
 
 function makeService() {
