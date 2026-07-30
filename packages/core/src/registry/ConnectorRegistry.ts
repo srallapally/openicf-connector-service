@@ -3,6 +3,7 @@ import type { Configuration } from "../spi/configuration.js";
 import type { ConnectorKey } from "../loader/types.js";  // ← Import from loader types
 import { toConnectorKey } from "../loader/types.js";
 import semver from "semver";
+import { redactSecrets } from "./redact.js";
 
 type Factory = (config: ConnectorConfig) => Promise<ConnectorSpi>;
 type ConfigBuilder = (raw: any) => Promise<Configuration>;
@@ -119,9 +120,19 @@ export class ConnectorRegistry {
     return this.instances.get(id)?.impl;
   }
 
-  /** (Optional) List full instances if needed for debugging/inspect */
+  /**
+   * List loaded instances for debugging and inspection.
+   *
+   * Configurations are redacted: secret-looking keys and any GuardedString
+   * become "***". Listings end up in logs and diagnostic payloads, so the
+   * default here is the safe one. `get()` and `getSpi()` are unredacted --
+   * operations need the real configuration, listings do not.
+   */
   list(): ConnectorInstance[] {
-    return Array.from(this.instances.values());
+    return Array.from(this.instances.values()).map(inst => ({
+      ...inst,
+      config: redactSecrets(inst.config),
+    }));
   }
 
   /**
