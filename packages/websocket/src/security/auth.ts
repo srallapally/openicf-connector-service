@@ -1,4 +1,4 @@
-import { NextFunction, Request, Response } from "express";
+import { NextFunction, Request, RequestHandler, Response } from "express";
 import { createRemoteJWKSet, jwtVerify, JWTPayload, errors as JoseErrors } from "jose";
 import { URL } from "url";
 import { LRUCache } from "lru-cache";
@@ -311,7 +311,17 @@ function generateFallbackIdentifier(payload: JWTPayload): string {
   return `fallback:${hash}`;
 }
 
-export async function requireJwt(requiredScopes?: string | string[]) {
+/**
+ * Build the JWT-verifying middleware.
+ *
+ * Not `async`: this is a factory, so `app.use(requireJwt())` must receive the
+ * handler itself. An `async` factory returned a Promise, which express rejects
+ * with "app.use() requires a middleware function". The returned handler is
+ * still async. The explicit `RequestHandler` return type is what enforces this
+ * at build time -- test files are excluded from tsconfig, so an annotation in a
+ * test would not be checked.
+ */
+export function requireJwt(requiredScopes?: string | string[]): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       const token = parseAuthHeader(req);
