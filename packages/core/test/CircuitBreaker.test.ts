@@ -109,3 +109,67 @@ describe("CircuitBreaker in-flight accounting", () => {
         b.resolve("y");
     });
 });
+
+// Ported from the legacy root-level test/framework/circuit-breaker.test.ts,
+// which imports src/core/CircuitBreaker.js -- a path that no longer exists --
+// and is not run by any workspace. The root copy is left in place for #13.
+describe("CircuitBreaker state machine", () => {
+    const opts = {
+        failureThreshold: 2,
+        successThreshold: 1,
+        halfOpenAfterMs: 1_000,
+        maxConcurrent: 2,
+        timeoutMs: 5_000,
+    };
+
+    it("opens after repeated failures and recovers after the half-open window", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(0);
+
+        const breaker = new CircuitBreaker({ ...opts });
+        const failing = vi.fn(async () => { throw new Error("fail"); });
+
+        await expect(breaker.exec(failing)).rejects.toThrow("fail");
+        await expect(breaker.exec(failing)).rejects.toThrow("fail");
+
+        await expect(breaker.exec(async () => "ok")).rejects.toThrow("CircuitOpen");
+
+        vi.setSystemTime(1_500);
+
+        const success = vi.fn(async () => "ok");
+        await expect(breaker.exec(success)).resolves.toBe("ok");
+        await expect(breaker.exec(async () => "ok")).resolves.toBe("ok");
+
+        expect(success).toHaveBeenCalledTimes(1);
+    });
+
+    it("reopens when a half-open probe fails", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(0);
+
+        const breaker = new CircuitBreaker({ ...opts });
+        const failing = vi.fn(async () => { throw new Error("fail"); });
+
+        await expect(breaker.exec(failing)).rejects.toThrow("fail");
+        await expect(breaker.exec(failing)).rejects.toThrow("fail");
+        await expect(breaker.exec(async () => "ok")).rejects.toThrow("CircuitOpen");
+
+        vi.setSystemTime(1_500);
+        // First call in HALF fails: a single failure reopens immediately.
+        await expect(breaker.exec(failing)).rejects.toThrow("fail");
+        await expect(breaker.exec(async () => "ok")).rejects.toThrow("CircuitOpen");
+    });
+
+    it("limits the number of concurrent executions", async () => {
+        const breaker = new CircuitBreaker({ ...opts, maxConcurrent: 1 });
+        const d = deferred<void>();
+        const slow = vi.fn(() => d.promise);
+
+        const firstCall = breaker.exec(slow);
+        await expect(breaker.exec(async () => "second")).rejects.toThrow("TooManyRequests");
+
+        d.resolve(undefined);
+        await expect(firstCall).resolves.toBeUndefined();
+        expect(slow).toHaveBeenCalledTimes(1);
+    });
+});
