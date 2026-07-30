@@ -12,6 +12,7 @@ export interface JwtConfig {
   expectedAudience: string;
   allowedAlgorithms: string[];
   clockSkewSeconds: number;
+  maxTokenAgeSeconds: number;
   requiredScope?: string;
 }
 
@@ -103,6 +104,22 @@ export function validateJwtConfig(): JwtConfig {
     );
   }
 
+  // Validate optional: JWT_MAX_TOKEN_AGE_SEC (with default: 24h)
+  const maxAgeString = process.env.JWT_MAX_TOKEN_AGE_SEC?.trim() || "86400";
+  const maxTokenAgeSeconds = Number(maxAgeString);
+  const MAX_TOKEN_AGE_CEILING = 7 * 24 * 60 * 60;
+
+  if (!Number.isInteger(maxTokenAgeSeconds)) {
+    errors.push(`JWT_MAX_TOKEN_AGE_SEC must be an integer, got: ${maxAgeString}`);
+  } else if (maxTokenAgeSeconds <= 0) {
+    errors.push(`JWT_MAX_TOKEN_AGE_SEC must be positive, got: ${maxTokenAgeSeconds}`);
+  } else if (maxTokenAgeSeconds > MAX_TOKEN_AGE_CEILING) {
+    errors.push(
+      `JWT_MAX_TOKEN_AGE_SEC is too large (max ${MAX_TOKEN_AGE_CEILING} seconds / 7 days), ` +
+      `got: ${maxTokenAgeSeconds}. Long-lived tokens weaken security.`
+    );
+  }
+
   // Validate optional: JWT_REQUIRED_SCOPE
   const requiredScope = process.env.JWT_REQUIRED_SCOPE?.trim();
   if (requiredScope && requiredScope.length > 256) {
@@ -122,6 +139,7 @@ export function validateJwtConfig(): JwtConfig {
     expectedAudience: expectedAudience!,
     allowedAlgorithms,
     clockSkewSeconds,
+    maxTokenAgeSeconds,
   };
 
   // Only include requiredScope if it's defined (exactOptionalPropertyTypes compliance)
@@ -211,7 +229,7 @@ export function requireJwt(requiredScopes?: string | string[]): RequestHandler {
         algorithms: config.allowedAlgorithms as any,
         issuer: config.expectedIssuer,
         audience: config.expectedAudience,
-        maxTokenAge: `${24}h`,
+        maxTokenAge: config.maxTokenAgeSeconds,
         clockTolerance: config.clockSkewSeconds,
       });
 
