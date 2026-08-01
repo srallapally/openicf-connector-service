@@ -44,6 +44,8 @@ Severity describes consequence, not effort.
 | [BUG-3](#bug-3) | medium | FIXED | `ops/*` | Delta updates cannot be enqueued; the `idempotentDelta` gate guards an unreachable path |
 | [RFE-1](#rfe-1) | low | FIXED | `config/runtime` | Interactive slice floor reserves a slot even at fraction 0 |
 | [BUG-4](#bug-4) | medium | MOVED | `ops/Dispatcher` | The reserved interactive slice is computed but never enforced |
+| [BUG-5](#bug-5) | high | FIXED | `core/package.json` | `core` imports `zod` but never declared it; it resolved only by monorepo hoisting |
+| [BUG-6](#bug-6) | high | FIXED | `core/testing` | The testing barrel eagerly loads the vitest-dependent clock, so `makeFakeConnector` is unusable outside a vitest worker |
 
 ---
 
@@ -557,3 +559,106 @@ connector is recorded `INDETERMINATE` with zero retries and the grant stays
 applied exactly once. A declaring connector retries and succeeds. A delta also
 adds without clobbering: granting `finance` to an account already holding
 `["eng", "vpn"]` yields all three, where a replace would have left one.
+
+
+<a id="bug-5"></a>
+## BUG-5 — `core` imports `zod` but never declared it
+
+| | |
+|---|---|
+| **Severity** | high |
+| **Status** | FIXED |
+| **Component** | `packages/core/package.json`, `packages/core/src/filter/validate.ts` |
+| **Reported** | 2026-08-01 |
+| **Affects** | every version; found when core was first consumed outside this monorepo |
+| **Found by** | Phase P1 of the provisioning service, installing core as a package |
+
+### Symptom
+
+`packages/core/src/filter/validate.ts` line 1 is `import { z } from "zod"`, and
+`parseFilter` is exported from the main entry point. `core`'s dependencies were
+`lru-cache`, `semver`, and `tarn`. `zod` was declared by
+`packages/websocket/package.json`.
+
+Inside the workspace this resolves: npm hoists `zod` to the root
+`node_modules` for the websocket package, and core finds it there. Nothing in
+this repository can observe the defect.
+
+Installed as a standalone package, the first import of the main entry throws:
+
+```
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'zod' imported from
+  .../@governance-connector-framework/core/dist/filter/validate.js
+```
+
+### Why it matters
+
+A missing runtime dependency makes the package unusable for its stated
+purpose. The plan's post-P8 step publishes core to GitHub Packages; published
+as it was, every consumer would have hit this on first import, and the
+workaround — declaring someone else's transitive dependency yourself — is one
+consumers should never have to find.
+
+### Fix
+
+`zod` added to `packages/core/dependencies`. It stays declared in the
+websocket package too, which uses it directly in `security/hardening.ts`.
+
+### Notes
+
+The class of defect matters more than the instance: nothing in CI installs
+core as a package, so a hoisted dependency is invisible here by construction.
+The provisioning service now consumes core as a tarball built from a pinned
+commit, which exercises the packaged shape on every install.
+
+---
+
+<a id="bug-6"></a>
+## BUG-6 — the testing barrel forces vitest into every consumer's graph
+
+| | |
+|---|---|
+| **Severity** | high |
+| **Status** | FIXED |
+| **Component** | `packages/core/src/testing/index.ts` |
+| **Reported** | 2026-08-01 |
+| **Affects** | `e633763` (Phase F13) onward |
+| **Found by** | Phase P1 of the provisioning service, running the soak script under tsx |
+
+### Symptom
+
+`src/testing/index.ts` re-exported `useFakeClock` from `./clock.js`, and
+`clock.ts` imports `vitest`. A barrel export is eager, so **any** import of
+`@governance-connector-framework/core/testing` loaded vitest — including one
+that wanted only `makeFakeConnector`.
+
+Outside a vitest worker, importing vitest throws:
+
+```
+Error: Vitest failed to access its internal state.
+```
+
+So `npx tsx test/load/soak.ts` died before running a single operation.
+
+### Why it matters
+
+F13 created this subpath so connector authors and embedding services would not
+each reinvent a fake target, and moved the soak script out of core on the
+understanding that the service would run it against `makeFakeConnector`. The
+barrel made those two decisions contradict each other.
+
+The file's own comment asserted the opposite — that "a consumer that never
+imports this subpath never needs vitest installed" — which is true and beside
+the point. The problem is the consumer who *does* import the subpath, for a
+double that has nothing to do with vitest.
+
+### Fix
+
+`useFakeClock` and `CLOCK_ORIGIN` are no longer re-exported from the barrel.
+`./testing/clock` is now its own export subpath, which only a test running
+under vitest will import. `export type { FakeClock }` stays in the barrel:
+type-only, erased at runtime, no module loaded.
+
+`test/exports.test.ts` gains two assertions — that the new subpath resolves,
+and that the barrel does **not** expose `useFakeClock` — so a future re-export
+fails the build rather than the next consumer.
