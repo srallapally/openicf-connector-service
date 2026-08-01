@@ -1,6 +1,7 @@
 // ========== Registry & Facade ==========
 export { ConnectorRegistry } from './registry/ConnectorRegistry.js';
-export { ConnectorFacade } from './registry/ConnectorFacade.js';
+export { ConnectorFacade, DeadlineExpiredError, isDeadlineExpired } from './registry/ConnectorFacade.js';
+export type { ConnectorFacadeOptions } from './registry/ConnectorFacade.js';
 export { ConnectorManager } from './registry/ConnectorManager.js';
 export type { ConnectorInstance, InstanceDefinition } from './registry/ConnectorRegistry.js';
 export type { Lease, ConnectorManagerOptions } from './registry/ConnectorManager.js';
