@@ -18,6 +18,9 @@ const SUBPATHS: Array<[specifier: string, expectedExport: string]> = [
     ["@governance-connector-framework/core/registry", "ConnectorRegistry"],
     ["@governance-connector-framework/core/infra", "CircuitBreaker"],
     ["@governance-connector-framework/core/spi", "GuardedString"],
+    ["@governance-connector-framework/core/spi", "ConnectorError"],
+    ["@governance-connector-framework/core", "ConnectorError"],
+    ["@governance-connector-framework/core", "isConnectorError"],
     ["@governance-connector-framework/core/filter", "parseFilter"],
     ["@governance-connector-framework/core/loader", "loadExternalConnectors"],
 ];

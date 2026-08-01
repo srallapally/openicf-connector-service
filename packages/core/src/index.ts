@@ -12,6 +12,8 @@ export { makePool, type Pooled } from './infra/Pool.js';
 // ========== SPI - Types & Interfaces ==========
 export type * from './spi/types.js';
 export type * from './spi/icf-compat.js';
+export { ConnectorError, isConnectorError } from './spi/errors.js';
+export type { ConnectorErrorCode } from './spi/errors.js';
 export type { Configuration } from './spi/configuration.js';
 export { requireNonEmpty } from './spi/configuration.js';
 
