@@ -1,10 +1,29 @@
 import { Pool as TarnPool } from "tarn";
 
 export interface Pooled<T> {
-  acquire(): Promise<T>;
+  /**
+   * Take a resource from the pool.
+   *
+   * `timeoutMillis` overrides the pool's configured acquire timeout for this
+   * one call, so a caller working against a deadline can wait for the shorter
+   * of "a connection frees up" and "my budget runs out" instead of blocking
+   * past the point anyone is still waiting for the answer.
+   */
+  acquire(timeoutMillis?: number): Promise<T>;
   release(resource: T): void;
   destroy(resource: T): void;
   destroyAll(): Promise<void>;
+  /** Resources currently checked out and idle, for metrics. */
+  stats(): { used: number; free: number; pendingAcquires: number };
+}
+
+/** Thrown when a per-call acquire budget expires before a resource frees up. */
+export class PoolAcquireTimeoutError extends Error {
+  constructor(timeoutMillis: number) {
+    super(`Timed out after ${timeoutMillis}ms waiting for a pooled connection`);
+    this.name = "PoolAcquireTimeoutError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
 }
 
 // Minimal runtime-compatible options shape (works across tarn v2/v3)
@@ -40,9 +59,40 @@ export function makePool<T>(
 
   return {
     _pool,
-    acquire: () => _pool.acquire().promise,
+
+    acquire: (timeoutMillis?: number): Promise<T> => {
+      const request = _pool.acquire();
+      if (timeoutMillis === undefined || !Number.isFinite(timeoutMillis)) {
+        return request.promise;
+      }
+      if (timeoutMillis <= 0) {
+        request.abort();
+        return Promise.reject(new PoolAcquireTimeoutError(0));
+      }
+
+      return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          // Abort the pending request rather than just abandoning it: an
+          // un-aborted request keeps its place in tarn's queue and would be
+          // handed a connection nobody is waiting for.
+          request.abort();
+          reject(new PoolAcquireTimeoutError(timeoutMillis));
+        }, timeoutMillis);
+
+        request.promise.then(
+            (r: T) => { clearTimeout(timer); resolve(r); },
+            (e: unknown) => { clearTimeout(timer); reject(e); },
+        );
+      });
+    },
+
     release: (r: T) => _pool.release(r),
     destroy: (r: T) => _pool.destroy(r),
     destroyAll: () => _pool.destroy(),
+    stats: () => ({
+      used: _pool.numUsed?.() ?? 0,
+      free: _pool.numFree?.() ?? 0,
+      pendingAcquires: _pool.numPendingAcquires?.() ?? 0,
+    }),
   };
 }
