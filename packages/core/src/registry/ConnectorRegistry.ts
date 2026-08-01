@@ -184,6 +184,36 @@ export class ConnectorRegistry {
     }
   }
 
+  /**
+   * Build a fresh, uncached SPI for a registered instance.
+   *
+   * Used by the connection pool, which needs N independent connectors for one
+   * instance. Deliberately does not touch the instances map: these are pool
+   * resources whose lifecycle belongs to the pool, and caching one of them as
+   * "the" instance would leave it disposed out from under the pool.
+   */
+  async createSpi(instanceId: string): Promise<ConnectorSpi> {
+    const def = this.definitions.get(instanceId);
+    if (!def) throw new Error(`Connector instance '${instanceId}' is not registered`);
+
+    const key = toConnectorKey(def.type, def.version);
+    const factory = this.factories.get(key);
+    if (!factory) throw new Error(`Unknown connector type ${def.type}@${def.version}`);
+
+    const builder = this.configBuilders.get(key);
+    const configObj: any = builder ? await builder(def.rawConfig) : def.rawConfig;
+    if (configObj && typeof configObj.validate === "function") await configObj.validate();
+
+    return factory({
+      logger: console,
+      config: configObj,
+      instanceId: def.id,
+      connectorId: def.type,
+      connectorVersion: def.version,
+      type: def.type,
+    });
+  }
+
   private async buildInstance(def: InstanceDefinition): Promise<ConnectorInstance> {
     const { id, type, version, rawConfig, runtime } = def;
     const key = toConnectorKey(type, version);

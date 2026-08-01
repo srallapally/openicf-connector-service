@@ -10,6 +10,9 @@
 
 import type { ConnectorInstance, ConnectorRegistry } from "./ConnectorRegistry.js";
 import { ConnectorFacade } from "./ConnectorFacade.js";
+import { makePooledSpi } from "./pooledSpi.js";
+import type { Pooled } from "../infra/Pool.js";
+import type { ConnectorSpi } from "../spi/types.js";
 
 /**
  * A borrowed connector.
@@ -66,6 +69,8 @@ interface LiveEntry {
 interface Materialized {
   instance: ConnectorInstance;
   facade: ConnectorFacade;
+  /** Present only for poolable connectors; drained on eviction and shutdown. */
+  pool: Pooled<ConnectorSpi> | undefined;
 }
 
 export class ConnectorManager {
@@ -156,14 +161,36 @@ export class ConnectorManager {
   private async materialize(instanceId: string, entry: LiveEntry): Promise<Materialized> {
     try {
       const instance = await this.registry.materializeInstance(instanceId);
+      const capabilities = this.registry.capabilitiesOf(instanceId);
+
+      let impl: ConnectorSpi = instance.impl;
+      let pool: Pooled<ConnectorSpi> | undefined;
+
+      if (capabilities.poolable) {
+        // A stateful protocol scales by opening more connections, so the
+        // facade talks to a pool rather than to one connector. Sized to the
+        // two concurrency budgets summed, which is the most in-flight work
+        // this instance can have.
+        const built = await makePooledSpi(
+            () => this.registry.createSpi(instanceId),
+            { max: instance.runtime.mutationConcurrency + instance.runtime.readConcurrency },
+        );
+        impl = built.spi;
+        pool = built.pool;
+
+        // The instance built during materialization is not the pool's, so
+        // disposing it here keeps a stray connection from outliving nothing.
+        await this.disposeSpi(instanceId, instance.impl);
+      }
+
       // The manager's clock is deliberately not passed down. The facade's
       // deadlines are enforced with setTimeout, so its notion of "now" must be
       // the same one the timer wheel uses; the manager's injectable clock only
       // drives idle accounting.
-      const facade = new ConnectorFacade(instance.impl, instance.id, {
+      const facade = new ConnectorFacade(impl, instance.id, {
         runtime: instance.runtime,
       });
-      const result: Materialized = { instance, facade };
+      const result: Materialized = { instance, facade, pool };
       entry.settled = result;
       return result;
     } catch (e) {
@@ -255,12 +282,33 @@ export class ConnectorManager {
     const materialized = entry.settled ?? await entry.promise.catch(() => undefined);
     if (!materialized) return;
 
-    await this.disposeInstance(entry.instanceId, materialized.instance);
+    await this.teardown(entry.instanceId, materialized);
   }
 
-  private async disposeInstance(instanceId: string, instance: ConnectorInstance): Promise<void> {
+  /**
+   * Release whatever the instance holds.
+   *
+   * A pooled instance drains its pool -- destroying every connection in it --
+   * rather than disposing the single connector built during materialization,
+   * which was already released at that point.
+   */
+  private async teardown(instanceId: string, m: Materialized): Promise<void> {
+    if (m.pool) {
+      try {
+        await m.pool.destroyAll();
+      } catch (e) {
+        this.logger.error(
+            `[manager] pool drain failed for instance ${instanceId}: ${(e as Error).message}`,
+        );
+      }
+      return;
+    }
+    await this.disposeSpi(instanceId, m.instance.impl);
+  }
+
+  private async disposeSpi(instanceId: string, impl: ConnectorSpi): Promise<void> {
     try {
-      await instance.impl.dispose?.();
+      await impl.dispose?.();
     } catch (e) {
       // Teardown failure must never propagate: it would abort a sweep or a
       // shutdown partway through and strand every instance after this one.
@@ -288,7 +336,7 @@ export class ConnectorManager {
       if (entry.disposing) continue;
       entry.disposing = true;
       const materialized = entry.settled ?? await entry.promise.catch(() => undefined);
-      if (materialized) await this.disposeInstance(entry.instanceId, materialized.instance);
+      if (materialized) await this.teardown(entry.instanceId, materialized);
     }
   }
 }
