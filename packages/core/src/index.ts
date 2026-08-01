@@ -34,12 +34,23 @@ export { toConnectorKey, parseConnectorKey, resolveCapabilities } from './loader
 export { OperationStore, OPERATIONS_SCHEMA_PATH } from './ops/OperationStore.js';
 export type {
   OperationType,
+  OperationStoreApi,
   EnqueueInput,
   EnqueueResult,
   ClaimedOperation,
   OperationStatusRow,
   PendingCounts,
 } from './ops/OperationStore.js';
+export { Dispatcher } from './ops/Dispatcher.js';
+export type { DispatcherConfig, DispatcherDeps } from './ops/Dispatcher.js';
+export {
+  admitAndEnqueue,
+  laneKeyFor,
+  AdmissionRejectedError,
+  isAdmissionRejected,
+  ADMISSION_DEFAULTS,
+} from './ops/admission.js';
+export type { AdmissionCaps, AdmitInput } from './ops/admission.js';
 
 // ========== Runtime configuration ==========
 export {

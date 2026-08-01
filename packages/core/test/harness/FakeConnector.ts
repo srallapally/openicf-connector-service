@@ -323,6 +323,10 @@ export function makeFakeConnector(opts: FakeConnectorOptions = {}): FakeConnecto
 /**
  * Minimal filter evaluation: enough for the create read-back, which is the
  * only filter shape the dispatcher constructs.
+ *
+ * Understands the framework's canonical CMP node (`{ type: "CMP", op: "EQ",
+ * path, value }`) and a loose `{ attribute, value }` form, so a test can write
+ * either.
  */
 function matchAll(
     target: FakeTarget,
@@ -335,7 +339,9 @@ function matchAll(
 
   if (!filter) return all;
 
-  const attr: string | undefined = filter.attribute ?? filter.field ?? filter.name;
+  const attr: string | undefined = filter.type === "CMP"
+      ? filter.path?.[0]
+      : filter.attribute ?? filter.field ?? filter.name;
   const value = filter.value;
 
   if (attr === undefined) return all;
