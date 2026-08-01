@@ -29,6 +29,10 @@
     "./loader": {
       "import": "./dist/loader/index.js",
       "types": "./dist/loader/index.d.ts"
+    },
+    "./ops": {
+      "import": "./dist/ops/index.js",
+      "types": "./dist/ops/index.d.ts"
     }
   },
   "files": [
@@ -40,7 +44,7 @@
     "node": ">=20.12.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -54,11 +58,13 @@
   ],
   "dependencies": {
     "lru-cache": "^11.0.1",
+    "pg": "^8.22.0",
     "semver": "^7.8.5",
     "tarn": "^3.0.2"
   },
   "devDependencies": {
     "@types/node": "^22.5.0",
+    "@types/pg": "^8.20.2",
     "@types/semver": "^7.7.1",
     "typescript": "^5.6.2",
     "vitest": "^3.2.4"
