@@ -20,10 +20,36 @@ export interface ConnectorInstance {
     runtime: ResolvedRuntimeConfig;
 }
 
+/**
+ * A registered instance that has not necessarily been constructed yet.
+ *
+ * Registration records what an instance *would* be; materialization runs the
+ * config builder and the factory. Splitting them is what lets a deployment
+ * with a thousand connector instances boot in seconds instead of minutes, and
+ * avoids a thundering herd of connections to targets nobody has asked for.
+ */
+export interface InstanceDefinition {
+    id: string;
+    type: string;
+    version: string;
+    rawConfig: ConnectorConfig;
+    runtime: ResolvedRuntimeConfig;
+}
+
 export class ConnectorRegistry {
   private factories = new Map<string, Factory>();
   private instances = new Map<string, ConnectorInstance>();
+  private definitions = new Map<string, InstanceDefinition>();
   private configBuilders = new Map<string, ConfigBuilder>();
+
+  /**
+   * In-flight materializations, keyed by instance id.
+   *
+   * The promise is stored before the first await, so two concurrent callers
+   * share one factory invocation rather than each building their own connector
+   * and one silently overwriting the other.
+   */
+  private materializing = new Map<string, Promise<ConnectorInstance>>();
 
   registerFactory(type: string, version: string, factory: Factory) {
         const key = toConnectorKey(type, version);  // ← Use helper
@@ -35,17 +61,47 @@ export class ConnectorRegistry {
         this.configBuilders.set(key, builder);
   }
 
-  async initInstance(
+  /**
+   * Record an instance without constructing it.
+   *
+   * Runs only the checks that are free: duplicate detection and runtime config
+   * validation. The config builder and the connector factory are deferred to
+   * {@link materializeInstance}, so registering a thousand instances costs a
+   * thousand map writes rather than a thousand connections.
+   *
+   * Runtime config is still validated here. A bad deadline or budget is an
+   * operator error in the deployment descriptor and should surface at boot,
+   * not on the first operation that happens to read the bad setting.
+   */
+  registerInstance(
       id: string,
       type: string,
       version: string,
       rawConfig: ConnectorConfig,
       runtimeConfig?: RuntimeConfigInput,
-  ) {
+  ): InstanceDefinition {
+    this.assertNotRegistered(id, type, version);
 
-    // Reject before building config: a rejected duplicate must not execute the
-    // new configuration's side effects. Overwriting silently orphaned the
-    // previous instance without ever running its lifecycle teardown.
+    let runtime: ResolvedRuntimeConfig;
+    try {
+      runtime = resolveRuntimeConfig(runtimeConfig);
+    } catch (e) {
+      throw new Error(`Connector instance '${id}': ${(e as Error).message}`, { cause: e });
+    }
+
+    const def: InstanceDefinition = { id, type, version, rawConfig, runtime };
+    this.definitions.set(id, def);
+    return def;
+  }
+
+  /**
+   * Reject a duplicate before anything with side effects runs.
+   *
+   * Overwriting silently orphaned the previous instance without ever running
+   * its lifecycle teardown, so a replacement has to go through
+   * disposeInstance() first.
+   */
+  private assertNotRegistered(id: string, type: string, version: string): void {
     const existing = this.instances.get(id);
     if (existing) {
       throw new Error(
@@ -55,18 +111,44 @@ export class ConnectorRegistry {
         `Call disposeInstance('${id}') first to replace it.`
       );
     }
-
-    // Validate framework tuning before anything with side effects runs. A bad
-    // deadline or budget is an operator error in the deployment descriptor, and
-    // it should surface at registration rather than on the first operation that
-    // happens to read the bad setting.
-    let runtime: ResolvedRuntimeConfig;
-    try {
-      runtime = resolveRuntimeConfig(runtimeConfig);
-    } catch (e) {
-      throw new Error(`Connector instance '${id}': ${(e as Error).message}`, { cause: e });
+    const def = this.definitions.get(id);
+    if (def) {
+      throw new Error(
+        `Connector instance '${id}' already registered as ${def.type}@${def.version}; ` +
+        `refusing to overwrite with ${type}@${version}. ` +
+        `Call disposeInstance('${id}') first to replace it.`
+      );
     }
+  }
 
+  /**
+   * Construct a registered instance, or return the one already built.
+   *
+   * Concurrent callers share a single factory invocation: the in-flight
+   * promise is published before the first await, so there is no window in
+   * which two callers both observe "not built yet" and each build one.
+   */
+  async materializeInstance(id: string): Promise<ConnectorInstance> {
+    const built = this.instances.get(id);
+    if (built) return built;
+
+    const inFlight = this.materializing.get(id);
+    if (inFlight) return inFlight;
+
+    const def = this.definitions.get(id);
+    if (!def) throw new Error(`Connector instance '${id}' is not registered`);
+
+    const promise = this.buildInstance(def);
+    this.materializing.set(id, promise);
+    try {
+      return await promise;
+    } finally {
+      this.materializing.delete(id);
+    }
+  }
+
+  private async buildInstance(def: InstanceDefinition): Promise<ConnectorInstance> {
+    const { id, type, version, rawConfig, runtime } = def;
     const key = toConnectorKey(type, version);
     const factory = this.factories.get(key);
 
@@ -90,8 +172,53 @@ export class ConnectorRegistry {
     });
 
     const connectorKey: ConnectorKey = { type, version };
-    this.instances.set(id, { id, type, connectorKey, config: configObj, impl: spi, runtime });
-    return this.instances.get(id)!;
+    const instance: ConnectorInstance = {
+      id, type, connectorKey, config: configObj, impl: spi, runtime,
+    };
+    this.instances.set(id, instance);
+    return instance;
+  }
+
+  /**
+   * Register an instance and construct it immediately.
+   *
+   * The eager path, kept as the default so existing callers -- which read
+   * `.impl` straight off the returned instance -- are unaffected. Callers that
+   * want lazy construction register with {@link registerInstance} and let
+   * ConnectorManager materialize on first use.
+   */
+  async initInstance(
+      id: string,
+      type: string,
+      version: string,
+      rawConfig: ConnectorConfig,
+      runtimeConfig?: RuntimeConfigInput,
+  ): Promise<ConnectorInstance> {
+    this.registerInstance(id, type, version, rawConfig, runtimeConfig);
+    try {
+      return await this.materializeInstance(id);
+    } catch (e) {
+      // A failed construction must not leave a definition behind claiming the
+      // id: the caller saw this throw and will reasonably retry with the same
+      // or a corrected configuration.
+      this.definitions.delete(id);
+      throw e;
+    }
+  }
+
+  /** The definition for a registered instance, built or not. */
+  getDefinition(id: string): InstanceDefinition | undefined {
+    return this.definitions.get(id);
+  }
+
+  /** Ids of every registered instance, whether or not it has been constructed. */
+  registeredIds(): string[] {
+    return Array.from(this.definitions.keys());
+  }
+
+  /** True if the instance has been constructed, as opposed to merely registered. */
+  isMaterialized(id: string): boolean {
+    return this.instances.has(id);
   }
     getVersions(type: string): string[] {
         return Array.from(this.factories.keys())
@@ -125,7 +252,15 @@ export class ConnectorRegistry {
     return Array.from(this.instances.keys());
   }
 
-  /** (Optional) Get the SPI facade directly if you need it */
+  /**
+   * (Optional) Get the SPI facade directly if you need it
+   *
+   * @deprecated Prefer `ConnectorManager.acquire()`, which hands back a leased
+   * {@link ConnectorFacade} rather than the raw SPI. A raw SPI reference
+   * bypasses the circuit breaker, the deadline, and the refcount that keeps an
+   * instance from being evicted while still in use, and it cannot be revoked
+   * once handed out. Retained because the websocket package still relies on it.
+   */
   getSpi(id: string) {
     return this.instances.get(id)?.impl;
   }
@@ -159,6 +294,10 @@ export class ConnectorRegistry {
    */
   async disposeInstance(id: string): Promise<void> {
     const inst = this.instances.get(id);
+    // The definition goes regardless of whether the instance was ever
+    // constructed: disposal releases the id, and a registered-but-unbuilt
+    // instance would otherwise keep claiming it forever.
+    this.definitions.delete(id);
     if (!inst) return;
     try {
       await inst.impl.dispose?.();
