@@ -70,6 +70,10 @@ const ENQUEUE = {
     attrs: { __NAME__: "jdoe" },
 };
 
+/** Operation ids are uuids; the store rejects anything that cannot be one. */
+const OP_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+const ABSENT_ID = "0b5f8f2e-1c3a-4d5e-8f70-9a1b2c3d4e5f";
+
 describe("schema.sql", () => {
     let sql: string;
 
@@ -238,6 +242,18 @@ describe("claimBatch", () => {
         expect(pool.find("UPDATE operations")!.text).toContain("NOT (o.lane_key = ANY($3::text[]))");
     });
 
+    it("collapses each lane to one row before applying the per-instance cap", async () => {
+        // Two PENDING rows on one lane must not both enter a cycle, and
+        // collapsing has to happen before ranking -- otherwise a same-lane
+        // backlog consumes the cap with rows that are then discarded.
+        await store.claimBatch(50, [], avail);
+        const text = pool.find("UPDATE operations")!.text;
+
+        expect(text).toContain("PARTITION BY o.instance_id, o.lane_key");
+        expect(text).toContain("WHERE lane_rn = 1");
+        expect(text.indexOf("lane_leaders")).toBeLessThan(text.indexOf("ranked AS"));
+    });
+
     it("drops instances with no available slots", async () => {
         await store.claimBatch(50, [], new Map([["ad-prod", 0], ["ldap", 4]]));
         expect(pool.find("UPDATE operations")!.values[0]).toEqual(["ldap"]);
@@ -288,7 +304,7 @@ describe("finalize", () => {
 
     it("writes the terminal status and the history row in one transaction", async () => {
         pool.responses = [["UPDATE operations", [terminalRow]]];
-        expect(await store.finalize("op-1", "SUCCEEDED", { uid: "minted-123" })).toBe(true);
+        expect(await store.finalize(OP_ID, "SUCCEEDED", { uid: "minted-123" })).toBe(true);
 
         const sql = pool.clientQueries.map(q => q.text);
         expect(sql[0]).toBe("BEGIN");
@@ -298,7 +314,7 @@ describe("finalize", () => {
 
     it("refuses to overwrite an already-terminal row", async () => {
         const q = (pool.responses = [["UPDATE operations", [terminalRow]]],
-            await store.finalize("op-1", "SUCCEEDED"), pool.find("UPDATE operations")!);
+            await store.finalize(OP_ID, "SUCCEEDED"), pool.find("UPDATE operations")!);
         expect(q.text).toContain("NOT (status = ANY($5::text[]))");
         expect(q.values[4]).toEqual([
             "SUCCEEDED", "REJECTED_PRE_DISPATCH", "FAILED_CONFIRMED", "INDETERMINATE",
@@ -306,14 +322,14 @@ describe("finalize", () => {
     });
 
     it("returns false and rolls back when nothing was updated", async () => {
-        expect(await store.finalize("missing", "FAILED_CONFIRMED")).toBe(false);
+        expect(await store.finalize(ABSENT_ID, "FAILED_CONFIRMED")).toBe(false);
         expect(pool.clientQueries.map(q => q.text)).toContain("ROLLBACK");
         expect(pool.clientQueries.some(q => q.text.includes("operations_history"))).toBe(false);
     });
 
     it("prefers the create result's minted uid for the history row", async () => {
         pool.responses = [["UPDATE operations", [terminalRow]]];
-        await store.finalize("op-1", "SUCCEEDED", { uid: "minted-123" });
+        await store.finalize(OP_ID, "SUCCEEDED", { uid: "minted-123" });
 
         const hist = pool.find("INSERT INTO operations_history")!;
         expect(hist.text).toContain("COALESCE($6, ($7::jsonb)->>'uid')");
@@ -323,7 +339,7 @@ describe("finalize", () => {
 
     it("binds the error code rather than interpolating it", async () => {
         pool.responses = [["UPDATE operations", [terminalRow]]];
-        await store.finalize("op-1", "FAILED_CONFIRMED", undefined, "ALREADY_EXISTS");
+        await store.finalize(OP_ID, "FAILED_CONFIRMED", undefined, "ALREADY_EXISTS");
         const q = pool.find("UPDATE operations")!;
         expect(q.values[3]).toBe("ALREADY_EXISTS");
         expect(q.text).not.toContain("ALREADY_EXISTS");
@@ -333,18 +349,18 @@ describe("finalize", () => {
 describe("requeue", () => {
     it("returns a RUNNING row to PENDING and counts the retry", async () => {
         pool.responses = [["UPDATE operations", [{}]]];
-        expect(await store.requeue("op-1")).toBe(true);
+        expect(await store.requeue(OP_ID)).toBe(true);
 
         const q = pool.find("UPDATE operations")!;
         expect(q.text).toContain("SET status = 'PENDING'");
         expect(q.text).toContain("claimed_at = NULL");
         expect(q.text).toContain("attempt_count = attempt_count + 1");
         expect(q.text).toContain("status = 'RUNNING'");
-        expect(q.values).toEqual(["op-1"]);
+        expect(q.values).toEqual([OP_ID]);
     });
 
     it("reports false when the row was not RUNNING", async () => {
-        expect(await store.requeue("op-1")).toBe(false);
+        expect(await store.requeue(OP_ID)).toBe(false);
     });
 });
 
@@ -372,7 +388,7 @@ describe("getStatus", () => {
             created_at: new Date("2026-08-01T00:00:00Z"), finalized_at: null,
         }]]];
 
-        const row = await store.getStatus("op-1");
+        const row = await store.getStatus(OP_ID);
         expect(row).toMatchObject({ id: "op-1", status: "RUNNING", attemptCount: 1, fromHistory: false });
         expect(pool.queries).toHaveLength(1);
     });
@@ -386,13 +402,27 @@ describe("getStatus", () => {
             created_at: new Date("2026-07-30T00:00:00Z"), finalized_at: new Date("2026-07-30T00:00:02Z"),
         }]]];
 
-        const row = await store.getStatus("op-1");
+        const row = await store.getStatus(OP_ID);
         expect(row).toMatchObject({ status: "SUCCEEDED", fromHistory: true });
         expect(row!.result).toEqual({ uid: "minted-123" });
     });
 
     it("returns null when neither table has the id", async () => {
-        expect(await store.getStatus("nope")).toBeNull();
+        expect(await store.getStatus(ABSENT_ID)).toBeNull();
         expect(pool.queries).toHaveLength(2);
+    });
+});
+
+describe("malformed operation ids", () => {
+    // Operation ids arrive straight from a URL path. Postgres answers a
+    // malformed uuid with a type error, so without this guard a mistyped id
+    // becomes a 500 instead of a 404.
+    it("treats a non-uuid as simply absent, without querying", async () => {
+        expect(await store.getStatus("not-a-uuid")).toBeNull();
+        expect(await store.finalize("../../etc/passwd", "SUCCEEDED")).toBe(false);
+        expect(await store.requeue("'; DROP TABLE operations; --")).toBe(false);
+
+        expect(pool.queries).toHaveLength(0);
+        expect(pool.clientQueries).toHaveLength(0);
     });
 });
