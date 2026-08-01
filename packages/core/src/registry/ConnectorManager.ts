@@ -156,7 +156,13 @@ export class ConnectorManager {
   private async materialize(instanceId: string, entry: LiveEntry): Promise<Materialized> {
     try {
       const instance = await this.registry.materializeInstance(instanceId);
-      const facade = new ConnectorFacade(instance.impl, instance.id);
+      // The manager's clock is deliberately not passed down. The facade's
+      // deadlines are enforced with setTimeout, so its notion of "now" must be
+      // the same one the timer wheel uses; the manager's injectable clock only
+      // drives idle accounting.
+      const facade = new ConnectorFacade(instance.impl, instance.id, {
+        runtime: instance.runtime,
+      });
       const result: Materialized = { instance, facade };
       entry.settled = result;
       return result;
