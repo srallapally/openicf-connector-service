@@ -23,6 +23,9 @@ const SUBPATHS: Array<[specifier: string, expectedExport: string]> = [
     ["@governance-connector-framework/core", "isConnectorError"],
     ["@governance-connector-framework/core/testing", "makeFakeConnector"],
     ["@governance-connector-framework/core/testing", "deferred"],
+    // Its own subpath since BUG-6: the barrel used to re-export it, which
+    // pulled vitest into the graph of anyone wanting only makeFakeConnector.
+    ["@governance-connector-framework/core/testing/clock", "useFakeClock"],
     ["@governance-connector-framework/core/filter", "parseFilter"],
     ["@governance-connector-framework/core/loader", "loadExternalConnectors"],
 ];
@@ -34,6 +37,15 @@ describe("package export map", () => {
             expect(mod[expectedExport]).toBeDefined();
         });
     }
+
+    it("does not put vitest in the graph of the testing barrel", async () => {
+        // makeFakeConnector has to be usable from a plain node process -- the
+        // soak script is one. Importing vitest outside a worker throws, so a
+        // clean import here is the assertion (BUG-6).
+        const mod = await import("@governance-connector-framework/core/testing");
+        expect(mod.useFakeClock).toBeUndefined();
+        expect(typeof mod.makeFakeConnector).toBe("function");
+    });
 
     it("filter subpath provides the whole filter surface", async () => {
         const mod = await import("@governance-connector-framework/core/filter");

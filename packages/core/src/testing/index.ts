@@ -7,9 +7,12 @@
 //
 // Reachable as `@governance-connector-framework/core/testing`.
 //
-// `clock` imports vitest, which is declared as an optional peer dependency.
-// Nothing in the main entry point touches it, so a consumer that never imports
-// this subpath never needs vitest installed.
+// `clock` is deliberately NOT re-exported here. It imports vitest, and a
+// barrel export loads it eagerly -- which made `makeFakeConnector` unusable
+// from any process that is not a vitest worker, including the soak script this
+// subpath exists to serve (BUG-6). Import it from
+// `@governance-connector-framework/core/testing/clock` instead, which only a
+// test running under vitest will ever do.
 
 export {
   makeFakeConnector,
@@ -27,5 +30,5 @@ export type {
 export { deferred, barrier, flushMicrotasks, until } from "./async.js";
 export type { Deferred } from "./async.js";
 
-export { useFakeClock, CLOCK_ORIGIN } from "./clock.js";
+
 export type { FakeClock } from "./clock.js";

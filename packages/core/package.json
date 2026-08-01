@@ -33,6 +33,10 @@
     "./testing": {
       "import": "./dist/testing/index.js",
       "types": "./dist/testing/index.d.ts"
+    },
+    "./testing/clock": {
+      "import": "./dist/testing/clock.js",
+      "types": "./dist/testing/clock.d.ts"
     }
   },
   "files": [
@@ -59,7 +63,8 @@
   "dependencies": {
     "lru-cache": "^11.0.1",
     "semver": "^7.8.5",
-    "tarn": "^3.0.2"
+    "tarn": "^3.0.2",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.5.0",
