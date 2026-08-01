@@ -171,3 +171,42 @@ Accept: build passes; dispatcher test asserts counters increment.
 Update README on the branch: async contract (202 + operationId, status endpoint semantics, outcome taxonomy table), runtime config reference (constants table above), retention + partition-drop gate, GCS payload-audit export requirement for payload-audit deployments, connector author obligations (honor abortSignal, throw ConnectorError, declare capability flags, document expected write latency for slow targets).
 
 Accept: README matches implemented behavior; no aspirational features documented.
+
+## Phase 11: status model, read-back deferral (BUG-1), reaper (BUG-2), RFE-1
+
+Authority: BUG_LOG.md entries BUG-1 (including the addendum), BUG-2, RFE-1. Read all three before writing code.
+
+One migration, `packages/core/src/ops/migrations/002_status_and_optype.sql`, plus the same changes applied to `schema.sql` for fresh installs. The migration carries Phase 12's op_type constraint change too, so Phase 12 is code-only.
+
+Schema:
+- New status `AWAITING_READBACK` (non-terminal). New column `not_before timestamptz null`.
+- Derived terminality: `terminal boolean GENERATED ALWAYS AS (status NOT IN ('PENDING','RUNNING','AWAITING_READBACK')) STORED`. Rewrite all four allow-list sites against it or against the non-terminal statuses via one definition: drop gate counts `NOT terminal`; claim index predicate becomes `WHERE NOT terminal` on `(instance_id, status, not_before)`; lane index predicate `WHERE NOT terminal`; status check constraint extended.
+- op_type check extended with `ADD_VALUES`, `REMOVE_VALUES` (dispatch lands in Phase 12).
+
+Store:
+- `deferForReadback(id, notBefore)`: sets AWAITING_READBACK + not_before. Does NOT increment attempt_count (BUG-1 trap 1; same rule CP-3 recorded for backoff).
+- `claimBatch` claims PENDING rows, plus AWAITING_READBACK rows with `not_before <= now()`. Claimed AWAITING_READBACK rows carry their prior status to the dispatcher.
+
+Dispatcher:
+- `resolveCreateAfterDeadline` no longer sleeps. On deadline: `deferForReadback(id, now + attemptDeadlineMs.create + readBackGraceMs)`, release slot, lease, and claim; lane stays excluded through the lane index (BUG-1: the lane hold is correct and must survive).
+- A claimed AWAITING_READBACK row resumes at the read-back step, never re-issues the create (BUG-1 trap 2; the status is the marker).
+- Reaper in the dispatcher loop under `pg_advisory_xact_lock`: rows RUNNING with `claimed_at < now() - reaperThresholdMs`. Threshold default 10 min, configurable; must exceed the instance deadline ceiling plus read-back grace (BUG-2: reclaiming live work makes two dispatchers run one mutation). Reaped CREATE -> `deferForReadback` (outcome unknown; blind retry is the duplicate-account path). Reaped UPDATE/DELETE -> PENDING without attempt_count increment. Reaper ignores AWAITING_READBACK rows before not_before.
+
+Config (RFE-1): floor applies only when `interactiveSliceFraction > 0`; zero means zero slots. One-line change + test. CP-4 records the amendment.
+
+Tests: slot released during read-back wait (other ops on the instance claimable, same-lane op not); resumed row performs search not create; reaper routes each op_type correctly and skips deferred read-backs; contract suite extended for deferForReadback and the widened claim; pg tier green; drop gate refuses a partition holding AWAITING_READBACK.
+
+Close BUG-1, BUG-2, RFE-1 in BUG_LOG.md with fixing commits.
+
+## Phase 12: delta operations (BUG-3, option A)
+
+Decision: option A, ICF alignment (`UpdateAttributeValuesOp`). Recorded at CP-4.
+
+- Enqueue API accepts op_type `ADD_VALUES` / `REMOVE_VALUES`: requires uid; attrs carry the values to add or remove. Lane key: uid-based, same as UPDATE/DELETE.
+- Dispatcher arms call `facade.addAttributeValues` / `facade.removeAttributeValues` (already breaker- and deadline-wired).
+- Retry gate: on deadline or retryable error, retry only when the manifest declares `idempotentDelta`; otherwise INDETERMINATE (reconciliation backstop). No read-back for deltas.
+- Delete `isDeltaUpdate` and every `__DELTA__` reference (code, README, openapi). UPDATE is always replace.
+- FakeConnector: stateful add/remove implementations plus a non-idempotent append mode to prove the gate.
+- Tests: grant adds without clobbering existing values; delta timeout on a non-declaring connector -> INDETERMINATE with zero retries; declaring connector retries; replay against the non-idempotent fake demonstrates why the gate exists.
+
+Close BUG-3. Update README and openapi. CP-4 after both phases: ratify bug-log conventions, RFE-1 amendment, BUG-3 option A, and the reaper threshold rule.
