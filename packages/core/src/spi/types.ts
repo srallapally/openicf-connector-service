@@ -21,6 +21,12 @@ export interface SortKey {
   ascending?: boolean | undefined;
 }
 
+/**
+ * Scheduling hint set from caller provenance, never inferred from request
+ * shape. "batch" is the default and the safe value: it cannot starve anyone.
+ */
+export type OperationPriority = "interactive" | "batch";
+
 export interface OperationOptions {
   attributesToGet?: string[] | undefined;
   pageSize?: number | undefined;
@@ -39,7 +45,45 @@ export interface OperationOptions {
   sortBy?: string | undefined;
   sortOrder?: "ASC" | "DESC" | undefined;
   timeoutMs?: number | undefined;
+
+  // Async provisioning contract (checkpoint CP-1/CP-2)
+
+  /**
+   * Cooperative cancellation. The framework aborts this signal when the
+   * attempt deadline expires. Connectors MUST pass it to their I/O calls
+   * (native fetch honors it directly). An attempt that ignores it keeps
+   * its lane slot until the target answers.
+   */
+  abortSignal?: AbortSignal | undefined;
+
+  /**
+   * Absolute deadline as epoch milliseconds. Set once at the API edge.
+   * Each layer derives its own wait from the remainder; no layer sets an
+   * independent timer. Takes precedence over timeoutMs when both are set.
+   */
+  deadlineEpochMs?: number | undefined;
+
+  /** Scheduling hint. Absent means "batch". */
+  priority?: OperationPriority | undefined;
 }
+
+/**
+ * Terminal outcome of an async mutation, recorded on the operation row.
+ *
+ * The three failure states carry different retry contracts and MUST NOT
+ * be collapsed:
+ * - REJECTED_PRE_DISPATCH: never reached the connector (admission cap,
+ *   breaker open, invalid config). Blind retry is safe.
+ * - FAILED_CONFIRMED: the target confirmed rejection. Retry per error class.
+ * - INDETERMINATE: the deadline expired after dispatch. The target may have
+ *   applied the change. Resolve by read-back or reconciliation before any
+ *   retry.
+ */
+export type OperationOutcome =
+    | "SUCCEEDED"
+    | "REJECTED_PRE_DISPATCH"
+    | "FAILED_CONFIRMED"
+    | "INDETERMINATE";
 
 // ---------- Schema types ----------
 export type AttrType =
