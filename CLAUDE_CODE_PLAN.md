@@ -1,18 +1,67 @@
 <!-- CLAUDE_CODE_PLAN.md -->
 # Implementation plan: async provisioning (feature/async-provisioning)
 
-Repo: governance-connector-framework. Branch: `feature/async-provisioning` off `main@9136e57`.
-Phase 1 of the SPI contract is already committed (OperationOptions: abortSignal, deadlineEpochMs, priority; OperationOutcome type).
-Design authority: `governance-connector-framework_checkpoint_log.md` (CP-1, CP-2). If this plan and the log disagree, the log wins. Ask before deviating from any LOCKED item.
+**Status: all phases complete.** Phases 1–10 are merged to `main` (`491d2ac`).
+Phases 11–12 and the design records live on `feature/async-provisioning` and
+are not yet merged.
+
+Repo: governance-connector-framework. Branch: `feature/async-provisioning`,
+originally cut off `main@9136e57`.
+
+Design authority, in precedence order:
+
+1. `governance-connector-framework_checkpoint_log.md` — CP-1 through CP-4. If
+   this plan and the log disagree, **the log wins.** Ask before deviating from
+   any LOCKED item.
+2. `BUG_LOG.md` — defects and enhancement requests against what was built.
+   Currently no open entries.
+3. This file — what was planned, and how it turned out.
+
+The phase specifications below are kept as written. Where the delivered code
+differs, the phase carries a **Delivered** note and the reasoning is recorded
+in [Deviations](#deviations-from-the-original-plan) and in the checkpoint log.
+
+## Phase status
+
+| Phase | Subject | State |
+|---|---|---|
+| 1 | SPI async fields (`abortSignal`, `deadlineEpochMs`, `priority`, outcomes) | merged |
+| 1.5 | Test harness, contract suite, Postgres tier | merged |
+| 2 | `ConnectorError` taxonomy | merged |
+| 3 | Manifest capability flags + runtime config | merged |
+| 4 | Operation table DDL + `OperationStore` | merged |
+| 5 | `ConnectorManager` | merged |
+| 6 | Facade rework | merged |
+| 7 | Dispatcher + admission | merged |
+| 8 | Pool wiring | merged |
+| 9 | Metrics | merged |
+| 10 | Docs | merged |
+| 11 | Status model, read-back deferral, reaper, RFE-1 | on branch |
+| 12 | Delta operations (BUG-3) | on branch |
+
+Current: 419 tests green against PostgreSQL 16, 368 plus 51 skipped without a
+database; `packages/websocket` 242 unchanged throughout.
 
 ## Ground rules
 
-- All work on `feature/async-provisioning`. Never commit to `main`.
-- One phase per commit. Conventional commit messages: `feat(core): ...`, `test(core): ...`.
-- `npm run build` must pass after every phase. `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess` are on: optional properties use `| undefined`, index reads are checked.
-- Do not modify `packages/websocket` except where a phase names it. Do not fix unrelated code. Match existing file style.
-- No new runtime dependencies except `pg` (phase 4). Everything else uses what package.json already has (tarn, lru-cache, zod, semver).
+- All work on `feature/async-provisioning` or branches cut from it. Never check
+  out, merge into, or push to `main`. Pull requests use base
+  `feature/async-provisioning`.
+- One phase per commit. Conventional commit messages: `feat(core): ...`,
+  `test(core): ...`.
+- `npm run build` must pass after every phase. `exactOptionalPropertyTypes` and
+  `noUncheckedIndexedAccess` are on: optional properties use `| undefined`,
+  index reads are checked. Note that `Required<T>` does not strip an explicit
+  `| undefined`, so resolved-config types are spelled out rather than derived.
+- Do not modify `packages/websocket` except where a phase names it. Do not fix
+  unrelated code. Match existing file style.
+- No new runtime dependencies except `pg` (phase 4). **`zod` is a
+  `packages/websocket` dependency, not a core one** — core has only
+  `lru-cache`, `pg`, `semver`, and `tarn`. Validation in core is hand-rolled.
 - Each phase lists acceptance checks. Run them before committing.
+- The database tier is optional: `npm test` must pass with no server present.
+  `bash scripts/test-pg.sh` brings up a throwaway cluster and prints the
+  `DATABASE_URL` to export.
 
 ## Decided constants (from CP-2, do not re-decide)
 
@@ -21,12 +70,14 @@ Design authority: `governance-connector-framework_checkpoint_log.md` (CP-1, CP-2
 | attemptDeadlineMs | 3000 | 1..120000, reject -1/0 at config validation | per instance, per op type |
 | mutationConcurrency | 10 | >=1 | per instance |
 | readConcurrency | 10 | >=1 | per instance |
-| interactiveSliceFraction | 0.2 | 0..1; ceil(); min 1 slot when mutationConcurrency >= 2; 0 slots at 1 | per instance |
+| interactiveSliceFraction | 0.2 | 0..1; ceil(); min 1 slot for any **positive** fraction when mutationConcurrency >= 2; 0 slots at budget 1; **0 means no reservation** (RFE-1, amended at CP-4) | per instance |
 | rate limits | off | optional per op: { requestLimit, requestPeriodMs, requestTimeoutMs } | per instance |
 | hot table retention | 24h | per deployment | dispatcher config |
 | claim batch size | 50..100 rows | — | dispatcher |
 | create read-back delay | > attemptDeadlineMs of that instance/op | — | dispatcher |
 | create retry after read-back miss | max 1 | — | dispatcher |
+| reaperThresholdMs | 600000 | must exceed instance deadline ceiling + read-back grace (CP-4) | dispatcher |
+| reaperIntervalMs | 60000 | — | dispatcher |
 
 ## Phase 1.5: test harness
 
@@ -60,6 +111,9 @@ Accept: build passes; new exports resolve from `@governance-connector-framework/
 
 ## Phase 3: manifest capability flags + instance runtime config
 
+**Delivered.** Validation is hand-rolled, not zod — see Deviations. Runtime
+config also carries an opt-in `readCache` block, consumed in Phase 6.
+
 Files: the loader manifest types + zod schema (find them under `packages/core/src/loader/`), and the instance-config type used by `initInstance`.
 
 Manifest additions, all optional booleans defaulting false:
@@ -77,6 +131,11 @@ Instance runtime config additions (new optional `runtime` block on instance conf
 Accept: build passes; tests cover: -1 rejected, ceiling enforced, slice floor at budgets 1, 2, 3, 10.
 
 ## Phase 4: operation table DDL + store module
+
+**Delivered, with two schema corrections forced by Postgres** — the composite
+primary key and the advisory-lock idempotency. See Deviations. The claim query
+also collapses each lane to one row before ranking, which the original spec did
+not call for; without it two operations on one lane could enter a single batch.
 
 New files: `packages/core/src/ops/schema.sql`, `packages/core/src/ops/OperationStore.ts`. New dependency: `pg` (+ `@types/pg` dev). The store takes a `pg.Pool` in its constructor; it never creates one. Give the dispatcher its own small pool in docs.
 
@@ -100,6 +159,11 @@ New files: `packages/core/src/ops/schema.sql`, `packages/core/src/ops/OperationS
 Accept: build passes; contract suite (Phase 1.5) green against MemoryOperationStore and against local Postgres via `test:pg`; DDL loads clean; two concurrent claimers never claim the same row (SKIP LOCKED test).
 
 ## Phase 5: ConnectorManager (replaces direct registry use for the data path)
+
+**Delivered as an additive path.** `initInstance` stays eager because
+`packages/websocket` reads `.impl` off its return, and this phase is not
+permitted to change that package. Lazy construction is `registerInstance` plus
+`materializeInstance`, which is what the manager uses. See Deviations.
 
 New file `packages/core/src/registry/ConnectorManager.ts`. Surgical: `ConnectorRegistry` keeps manifest/version bookkeeping; the manager owns instance lifecycle. Existing eager `initInstance`-at-boot path changes to registration-only (store config, do not construct the connector).
 
@@ -125,6 +189,12 @@ Streaming: search/sync must pass the caller's ResultsHandler through end-to-end 
 Accept: build passes; tests: deadline aborts a hung fake connector at budget; handler `false` stops a streaming fake; no cache unless configured.
 
 ## Phase 7: dispatcher
+
+**Delivered, superseded in part by Phases 11–12.** The create read-back no
+longer sleeps inline (BUG-1), a reaper recovers abandoned rows (BUG-2), and the
+delta retry gate moved onto real `ADD_VALUES` / `REMOVE_VALUES` op types
+(BUG-3). Backoff is enforced by excluding the lane from the claim rather than by
+requeueing, since `requeue` increments `attempt_count`.
 
 New file `packages/core/src/ops/Dispatcher.ts`. Constructor takes `{ store, manager, config }`. Runs in-process; multiple replicas coordinate through SKIP LOCKED only — no leader election, no locks beyond the claim query.
 
@@ -168,11 +238,22 @@ Accept: build passes; dispatcher test asserts counters increment.
 
 ## Phase 10: docs
 
+**Delivered.** The README states explicitly that this package supplies the
+machinery — `admitAndEnqueue`, `Dispatcher`, `getStatus` — and not the HTTP
+surface; the 202, the status route, and the 429 mapping belong to the embedding
+service. `openapi.yaml` carries vocabulary schemas only, for the same reason.
+
 Update README on the branch: async contract (202 + operationId, status endpoint semantics, outcome taxonomy table), runtime config reference (constants table above), retention + partition-drop gate, GCS payload-audit export requirement for payload-audit deployments, connector author obligations (honor abortSignal, throw ConnectorError, declare capability flags, document expected write latency for slow targets).
 
 Accept: README matches implemented behavior; no aspirational features documented.
 
 ## Phase 11: status model, read-back deferral (BUG-1), reaper (BUG-2), RFE-1
+
+**Delivered.** One correction to the spec: there is no migration runner in this
+package and no `001`. `schema.sql` is effectively `001` — applied whole and
+idempotent through `IF NOT EXISTS` — and `002_status_and_optype.sql` is applied
+by hand or by whatever tooling the deployment already uses. It was verified
+against a seeded pre-migration database, not just an empty one.
 
 Authority: BUG_LOG.md entries BUG-1 (including the addendum), BUG-2, RFE-1. Read all three before writing code.
 
@@ -200,6 +281,8 @@ Close BUG-1, BUG-2, RFE-1 in BUG_LOG.md with fixing commits.
 
 ## Phase 12: delta operations (BUG-3, option A)
 
+**Delivered.**
+
 Decision: option A, ICF alignment (`UpdateAttributeValuesOp`). Recorded at CP-4.
 
 - Enqueue API accepts op_type `ADD_VALUES` / `REMOVE_VALUES`: requires uid; attrs carry the values to add or remove. Lane key: uid-based, same as UPDATE/DELETE.
@@ -210,3 +293,62 @@ Decision: option A, ICF alignment (`UpdateAttributeValuesOp`). Recorded at CP-4.
 - Tests: grant adds without clobbering existing values; delta timeout on a non-declaring connector -> INDETERMINATE with zero retries; declaring connector retries; replay against the non-idempotent fake demonstrates why the gate exists.
 
 Close BUG-3. Update README and openapi. CP-4 after both phases: ratify bug-log conventions, RFE-1 amendment, BUG-3 option A, and the reaper threshold rule.
+
+---
+
+## Deviations from the original plan
+
+Each was forced by the environment or by a constraint the plan itself imposed,
+not chosen for convenience. All are recorded in the checkpoint log.
+
+1. **Primary key is `(id, created_at)`, not `id`.** PostgreSQL requires the
+   partition key in every unique key on a partitioned table. Callers still
+   address operations by `id` alone; the composite is a storage requirement.
+
+2. **The planned unique index on `(idempotency_key, created_at)` cannot
+   deduplicate.** Two enqueues of one key differ in timestamp, so they never
+   collide and the index enforces nothing. `enqueue` instead takes a
+   transaction-scoped advisory lock derived from the key and looks up before
+   inserting. Verified under 8-way concurrency.
+
+3. **Runtime config validation is hand-rolled, not zod.** The plan lists zod
+   among dependencies `package.json` already has; it belongs to
+   `packages/websocket`. "No new runtime dependencies except pg" won.
+
+4. **Phase 5's registration-only `initInstance` is additive, not a
+   replacement.** Making it registration-only breaks `packages/websocket`,
+   which the same phase forbids modifying. The design goal — no eager boot on
+   the async data path — is met through `registerInstance` plus
+   `materializeInstance`.
+
+5. **Delta operations are op types, not a marker on `UPDATE`.** The original
+   Phase 7 gate read a `__DELTA__` attribute that changed only whether an
+   operation retried, never what executed, so it guarded a path the dispatcher
+   could not reach (BUG-3). Phase 12 replaced it with `ADD_VALUES` /
+   `REMOVE_VALUES` dispatched to `UpdateAttributeValuesOp`.
+
+6. **No migration runner.** Numbering starts at `002` with `schema.sql` acting
+   as `001`. Stated here because the Phase 11 filename implies infrastructure
+   that does not exist.
+
+## Current state
+
+- Branch `feature/async-provisioning` is nine commits ahead of `origin/main`.
+- `BUG_LOG.md` has no open entries: BUG-1, BUG-2, BUG-3, and RFE-1 are all
+  FIXED, each with a resolution note.
+- CP-4 ratifies the bug-log conventions, the RFE-1 amendment to CP-2's slice
+  rule, BUG-3 option A, and the reaper threshold rule.
+- Soak baseline is recorded in the header of `packages/core/test/load/soak.ts`.
+
+### Open, carried in CP-4
+
+1. **Event-loop lag threshold for the sidecar split** — deferred on production
+   metrics since CP-1. The measurement is wired; the decision is not due.
+2. **Soak latency is measured from enqueue**, and the drain does not start
+   until every operation is enqueued, so a slow enqueue phase compresses the
+   gap between priority classes. An instrument limitation, not a framework one.
+3. **`MemoryOperationStore.claimBatch` is O(n) per cycle**, which caps the size
+   at which an in-memory soak means anything. Test double only; the Postgres
+   store answers the same question from a partial index.
+
+None of the three blocks further work.
