@@ -71,9 +71,9 @@ access token, and establishes a WebSocket session. The control plane can:
 
 ## Async provisioning
 
-Mutations (`create`, `update`, `delete`) are asynchronous. Reads (`get`,
-`search`, `sync`) stay synchronous — they have a caller waiting on the answer
-and nothing to make durable.
+Mutations (`create`, `update`, `delete`, `addValues`, `removeValues`) are
+asynchronous. Reads (`get`, `search`, `sync`) stay synchronous — they have a
+caller waiting on the answer and nothing to make durable.
 
 A mutation is recorded in a durable operation table and drained by a
 dispatcher, so the answer survives a restart and the caller is never left
@@ -111,11 +111,22 @@ cannot silently miss the partition-drop gate.
 - **DELETE** — `UNKNOWN_UID` resolves to `SUCCEEDED`: the desired end state is
   "absent", and it is absent. Retryable errors and deadlines retry with
   exponential backoff (5 attempts, 1s doubling to 60s), then `INDETERMINATE`.
-- **UPDATE** — full-replace updates are idempotent by construction and retry
-  freely. A delta update (`__DELTA__: true` on the payload) retries **only** if
-  the manifest declares `idempotentDelta`; otherwise a deadline records
-  `INDETERMINATE`, because replaying an increment or an append corrupts the
-  target silently.
+- **UPDATE** — always a full replace, which is idempotent by construction, so
+  it retries freely on a deadline or a retryable error.
+- **ADD_VALUES / REMOVE_VALUES** — deltas against a multi-valued attribute,
+  modelled on ICF's `UpdateAttributeValuesOp`. They require a `uid` and share
+  the uid lane with update and delete, so a grant and a revoke on one account
+  cannot overlap.
+
+  A delta retries **only** when the manifest declares `idempotentDelta`;
+  otherwise a deadline records `INDETERMINATE` and leaves it to
+  reconciliation. Against a set-valued attribute a replayed grant is a no-op;
+  against a list-valued one it is a *second grant*, and for entitlements that
+  is a silent privilege change. Only the connector knows which it is, so an
+  absent assertion reads as "not safe".
+
+  There is no read-back for deltas: unlike a create there is no naming
+  attribute to search on and no existence question to ask.
 - **CREATE** — success persists the minted `uid` and the returned object. A
   deadline parks the operation as `AWAITING_READBACK` until the attempt
   deadline plus a grace period has passed, then searches by the naming

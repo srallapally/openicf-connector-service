@@ -279,33 +279,15 @@ describe("UPDATE resolution and the delta retry gate", () => {
         expect(connector.controls.countOf("update")).toBe(2);
     });
 
-    it("refuses to retry a non-idempotent delta and records INDETERMINATE", async () => {
-        // Replaying an increment or an append silently corrupts the target,
-        // so an unasserted delta must never be retried.
+    it("retries a replace update on deadline regardless of the delta flag", async () => {
+        // UPDATE is always a full replace now, which is idempotent by
+        // construction. Deltas are their own op types with their own gate.
         setup({ runtime: { attemptDeadlineMs: 20 }, capabilities: { idempotentDelta: false } });
         const created = await connector.create!(OC, { __NAME__: "u" });
         connector.controls.hangUntilAborted();
 
         const { id } = await enqueue({
-            idempotencyKey: "u2", opType: "UPDATE", uid: created.uid,
-            attrs: { __DELTA__: true, groups: ["a"] },
-        });
-        await drain();
-
-        const row = await store.getStatus(id);
-        expect(row!.status).toBe("INDETERMINATE");
-        expect(row!.errorCode).toBe("DELTA_NOT_IDEMPOTENT");
-        expect(connector.controls.countOf("update")).toBe(1);
-    });
-
-    it("retries a delta the manifest declares idempotent", async () => {
-        setup({ runtime: { attemptDeadlineMs: 20 }, capabilities: { idempotentDelta: true } });
-        const created = await connector.create!(OC, { __NAME__: "u" });
-        connector.controls.hangUntilAborted();
-
-        const { id } = await enqueue({
-            idempotencyKey: "u3", opType: "UPDATE", uid: created.uid,
-            attrs: { __DELTA__: true, groups: ["a"] },
+            idempotencyKey: "u2", opType: "UPDATE", uid: created.uid, attrs: { title: "x" },
         });
         await drain();
 
@@ -721,17 +703,172 @@ describe("reaper (BUG-2)", () => {
     });
 });
 
-describe("delta op types are admitted but not yet dispatched", () => {
-    it("refuses ADD_VALUES before Phase 12 rather than running it as something else", async () => {
+describe("delta operations (BUG-3)", () => {
+    it("keys ADD_VALUES and REMOVE_VALUES on the uid, like update and delete", () => {
+        expect(laneKeyFor("ADD_VALUES", OC, { uid: "u1" })).toBe("uid:__ACCOUNT__:u1");
+        expect(laneKeyFor("REMOVE_VALUES", OC, { uid: "u1" })).toBe("uid:__ACCOUNT__:u1");
+        // Same lane as any other write to that object, so a grant and a
+        // revoke on one account cannot overlap.
+        expect(laneKeyFor("ADD_VALUES", OC, { uid: "u1" }))
+            .toBe(laneKeyFor("UPDATE", OC, { uid: "u1" }));
+        expect(() => laneKeyFor("ADD_VALUES", OC, {})).toThrow(/uid/);
+    });
+
+    it("adds a grant without clobbering the values already there", async () => {
+        // The distinction that makes deltas worth having: a replace carrying
+        // one group would have removed the other two.
         setup();
+        const created = await connector.create!(OC, { __NAME__: "u", groups: ["eng", "vpn"] });
+
         const { id } = await enqueue({
-            idempotencyKey: "delta", opType: "ADD_VALUES", uid: "u1",
-            laneKey: "uid:__ACCOUNT__:u1", attrs: { groups: ["a"] },
+            idempotencyKey: "add-1", opType: "ADD_VALUES", uid: created.uid,
+            attrs: { groups: ["finance"] },
+        });
+        await drain();
+
+        expect((await store.getStatus(id))!.status).toBe("SUCCEEDED");
+        expect(connector.controls.target.accounts.get(created.uid)!["groups"])
+            .toEqual(["eng", "vpn", "finance"]);
+    });
+
+    it("removes only the named values", async () => {
+        setup();
+        const created = await connector.create!(OC, { __NAME__: "u", groups: ["eng", "vpn", "finance"] });
+
+        const { id } = await enqueue({
+            idempotencyKey: "rm-1", opType: "REMOVE_VALUES", uid: created.uid,
+            attrs: { groups: ["vpn"] },
+        });
+        await drain();
+
+        expect((await store.getStatus(id))!.status).toBe("SUCCEEDED");
+        expect(connector.controls.target.accounts.get(created.uid)!["groups"])
+            .toEqual(["eng", "finance"]);
+    });
+
+    it("dispatches to the delta arm, not to update", async () => {
+        setup();
+        const created = await connector.create!(OC, { __NAME__: "u", groups: [] });
+        await enqueue({
+            idempotencyKey: "arm", opType: "ADD_VALUES", uid: created.uid,
+            attrs: { groups: ["a"] },
+        });
+        await drain();
+
+        expect(connector.controls.countOf("addAttributeValues")).toBe(1);
+        expect(connector.controls.countOf("update")).toBe(0);
+    });
+
+    it("records INDETERMINATE with zero retries when the manifest does not declare idempotentDelta", async () => {
+        setup({ runtime: { attemptDeadlineMs: 20 }, capabilities: { idempotentDelta: false } });
+        const created = await connector.create!(OC, { __NAME__: "u", groups: [] });
+        connector.controls.hangUntilAborted();
+
+        const { id } = await enqueue({
+            idempotencyKey: "gate-off", opType: "ADD_VALUES", uid: created.uid,
+            attrs: { groups: ["a"] },
         });
         await drain();
 
         const row = await store.getStatus(id);
-        expect(row!.status).toBe("REJECTED_PRE_DISPATCH");
-        expect(row!.errorCode).toBe("UNSUPPORTED_OP_TYPE:ADD_VALUES");
+        expect(row!.status).toBe("INDETERMINATE");
+        expect(row!.errorCode).toBe("DELTA_NOT_IDEMPOTENT");
+        expect(row!.attemptCount).toBe(0);
+        // Exactly one attempt. Reconciliation is the backstop.
+        expect(connector.controls.countOf("addAttributeValues")).toBe(1);
+    });
+
+    it("retries when the manifest declares the delta idempotent", async () => {
+        setup({ runtime: { attemptDeadlineMs: 20 }, capabilities: { idempotentDelta: true } });
+        const created = await connector.create!(OC, { __NAME__: "u", groups: [] });
+        connector.controls.hangUntilAborted();
+
+        const { id } = await enqueue({
+            idempotencyKey: "gate-on", opType: "ADD_VALUES", uid: created.uid,
+            attrs: { groups: ["a"] },
+        });
+        await drain();
+
+        expect((await store.getStatus(id))!.status).toBe("SUCCEEDED");
+        expect(connector.controls.countOf("addAttributeValues")).toBe(2);
+    });
+
+    it("never reads back a delta", async () => {
+        // There is no naming attribute to search on and no existence question
+        // to ask, so a search here would be meaningless.
+        setup({ runtime: { attemptDeadlineMs: 20 }, capabilities: { idempotentDelta: false } });
+        const created = await connector.create!(OC, { __NAME__: "u", groups: [] });
+        connector.controls.hangUntilAborted();
+
+        await enqueue({
+            idempotencyKey: "no-readback", opType: "ADD_VALUES", uid: created.uid,
+            attrs: { groups: ["a"] },
+        });
+        await drain();
+
+        expect(connector.controls.countOf("search")).toBe(0);
+    });
+
+    it("records UNKNOWN_UID as a confirmed failure", async () => {
+        setup();
+        const { id } = await enqueue({
+            idempotencyKey: "ghost", opType: "ADD_VALUES", uid: "nope",
+            attrs: { groups: ["a"] },
+        });
+        await drain();
+
+        const row = await store.getStatus(id);
+        expect(row!.status).toBe("FAILED_CONFIRMED");
+        expect(row!.errorCode).toBe("UNKNOWN_UID");
+    });
+});
+
+describe("why the idempotentDelta gate exists", () => {
+    it("a replayed grant doubles it against a list-valued target", async () => {
+        // The connector here appends without deduplicating, which is what a
+        // list-valued multi-value attribute does. Replaying the grant is not a
+        // no-op -- it is a second grant.
+        setup({ connectorOpts: { nonIdempotentDelta: true } });
+        const created = await connector.create!(OC, { __NAME__: "u", groups: [] });
+
+        await connector.addAttributeValues!(OC, created.uid, { groups: ["finance"] });
+        await connector.addAttributeValues!(OC, created.uid, { groups: ["finance"] });
+
+        expect(connector.controls.target.accounts.get(created.uid)!["groups"])
+            .toEqual(["finance", "finance"]);
+    });
+
+    it("the gate stops the dispatcher replaying one", async () => {
+        setup({
+            runtime: { attemptDeadlineMs: 20 },
+            capabilities: { idempotentDelta: false },
+            connectorOpts: { nonIdempotentDelta: true },
+        });
+        const created = await connector.create!(OC, { __NAME__: "u", groups: [] });
+        // The target applies it, then the answer never arrives.
+        connector.controls.applyThenHang();
+
+        const { id } = await enqueue({
+            idempotencyKey: "no-double", opType: "ADD_VALUES", uid: created.uid,
+            attrs: { groups: ["finance"] },
+        });
+        await drain();
+
+        // Recorded as unresolved rather than retried, so the grant is applied
+        // exactly once. A retry here would have made it two.
+        expect((await store.getStatus(id))!.status).toBe("INDETERMINATE");
+        expect(connector.controls.target.accounts.get(created.uid)!["groups"])
+            .toEqual(["finance"]);
+    });
+
+    it("a set-valued target is safe to replay, which is what the flag asserts", async () => {
+        setup({ capabilities: { idempotentDelta: true } });
+        const created = await connector.create!(OC, { __NAME__: "u", groups: [] });
+
+        await connector.addAttributeValues!(OC, created.uid, { groups: ["finance"] });
+        await connector.addAttributeValues!(OC, created.uid, { groups: ["finance"] });
+
+        expect(connector.controls.target.accounts.get(created.uid)!["groups"])
+            .toEqual(["finance"]);
     });
 });

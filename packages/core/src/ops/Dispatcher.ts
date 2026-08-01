@@ -436,15 +436,11 @@ export class Dispatcher {
     const attrs = (op.attrs ?? {}) as Record<string, any>;
 
     switch (op.opType) {
-      case "CREATE":  return this.attemptCreate(op, lease, runtime, options, attrs);
-      case "UPDATE":  return this.attemptUpdate(op, lease, options, attrs);
-      case "DELETE":  return this.attemptDelete(op, lease, options);
-      default:
-        // ADD_VALUES / REMOVE_VALUES are admitted by the schema from Phase 11
-        // so the migration carries the constraint, but dispatch lands in
-        // Phase 12. Until then such a row is refused rather than silently
-        // executed as something it is not.
-        return { outcome: "REJECTED_PRE_DISPATCH", errorCode: `UNSUPPORTED_OP_TYPE:${op.opType}` };
+      case "CREATE":         return this.attemptCreate(op, lease, runtime, options, attrs);
+      case "UPDATE":         return this.attemptUpdate(op, lease, options, attrs);
+      case "DELETE":         return this.attemptDelete(op, lease, options);
+      case "ADD_VALUES":
+      case "REMOVE_VALUES":  return this.attemptDelta(op, lease, options, attrs);
     }
   }
 
@@ -600,28 +596,62 @@ export class Dispatcher {
       const retryable = isDeadlineExpired(e) || (isConnectorError(e) && e.retryable);
       if (!retryable) return { outcome: "FAILED_CONFIRMED", errorCode: codeOf(e) };
 
-      // Full-replace updates are idempotent by construction, so replaying one
-      // is safe. A delta -- increment, append, toggle -- is not, and replaying
-      // it silently corrupts the target, so it retries only when the manifest
-      // asserts the delta is idempotent.
-      if (this.isDeltaUpdate(op) && !this.registry.capabilitiesOf(op.instanceId).idempotentDelta) {
+      // UPDATE is always a full replace, which is idempotent by construction,
+      // so replaying one is safe. Deltas are their own op types and carry
+      // their own retry gate.
+      return this.backoffOrGiveUp(op, codeOf(e), "INDETERMINATE");
+    }
+  }
+
+  // ---- ADD_VALUES / REMOVE_VALUES ----------------------------------------
+
+  /**
+   * Apply a delta to a multi-valued attribute.
+   *
+   * Modelled on ICF's UpdateAttributeValuesOp rather than on a flag riding an
+   * ordinary update: a delta is a different operation against the target, not
+   * a replace wearing a marker, and representing it as one is what let the
+   * previous retry gate guard a code path that could never execute.
+   */
+  private async attemptDelta(
+      op: ClaimedOperation,
+      lease: Lease,
+      options: OperationOptions,
+      attrs: Record<string, any>,
+  ): Promise<Resolution> {
+    if (op.uid === null || op.uid === undefined || op.uid === "") {
+      return { outcome: "REJECTED_PRE_DISPATCH", errorCode: "MISSING_UID" };
+    }
+
+    const adding = op.opType === "ADD_VALUES";
+
+    try {
+      const updated: any = adding
+          ? await lease.facade.addAttributeValues(op.objectClass, op.uid, attrs, options)
+          : await lease.facade.removeAttributeValues(op.objectClass, op.uid, attrs, options);
+      return { outcome: "SUCCEEDED", result: { uid: updated?.uid ?? op.uid, object: updated } };
+    } catch (e) {
+      if (isConnectorError(e) && e.code === "UNKNOWN_UID") {
+        return { outcome: "FAILED_CONFIRMED", errorCode: "UNKNOWN_UID" };
+      }
+
+      const retryable = isDeadlineExpired(e) || (isConnectorError(e) && e.retryable);
+      if (!retryable) return { outcome: "FAILED_CONFIRMED", errorCode: codeOf(e) };
+
+      // The gate. A delta is only safe to replay if the target applies it with
+      // set semantics; against list semantics a replay doubles the grant, and
+      // for entitlements that is a silent privilege change. Only the manifest
+      // can assert which it is, and absence of an assertion has to read as no.
+      //
+      // There is deliberately no read-back here: unlike a create, there is no
+      // naming attribute to search on and no "does it exist" question to ask.
+      // Reconciliation is the backstop.
+      if (!this.registry.capabilitiesOf(op.instanceId).idempotentDelta) {
         return { outcome: "INDETERMINATE", errorCode: "DELTA_NOT_IDEMPOTENT" };
       }
 
       return this.backoffOrGiveUp(op, codeOf(e), "INDETERMINATE");
     }
-  }
-
-  /**
-   * Whether this update is a delta rather than a full replace.
-   *
-   * Marked by the enqueuing API on the payload. Absent the marker the
-   * operation is treated as a replace, which matches the SPI's update
-   * contract.
-   */
-  private isDeltaUpdate(op: ClaimedOperation): boolean {
-    const attrs = op.attrs as Record<string, unknown> | null;
-    return attrs?.["__DELTA__"] === true;
   }
 
   // ---- DELETE ------------------------------------------------------------

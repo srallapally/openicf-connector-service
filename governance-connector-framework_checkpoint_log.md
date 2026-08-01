@@ -150,3 +150,50 @@
 - soak vs real dispatcher: 4k ops, 0 lane violations, interactive p50 64ms vs batch 151ms
 - defects found+fixed in own phases: lane double-claim, non-uuid id 500, backoff attempt inflation, lag NaN
 - feature/async-provisioning @ a7f027e, restarted on merged main; local main untouched
+
+---
+## CP-4 | 2026-08-01T18:38:03Z
+<!-- topic: phases 11-12, bug remediation ratified -->
+
+### DECIDED
+- bug-log conventions ratified: BUG-n / RFE-n, ids never reused, severity by consequence not effort — LOCKED
+- BUG_LOG.md is the third design record: plan says intended, CPLOG says decided, bug log says wrong-with-built
+- interactive slice: fraction 0 means zero slots [amends CP-2: "min 1 slot at budget >=2"] — LOCKED
+- slice floor applies to positive fractions only [ceil() already guarantees >=1, so 0 was the only input it changed]
+- terminality derived in SQL: generated `terminal` column, four allow-list sites collapsed to one definition — LOCKED
+- AWAITING_READBACK: non-terminal status + not_before column; deferral replaces the inline read-back sleep
+- deferred row holds its lane, not its slot/lease/claim [blocked_lanes makes lane serialization durable across restart]
+- deferForReadback does not increment attempt_count [read-back allows one retry; the wait must not spend it]
+- priorStatus on the claimed row marks a resume; a resumed create searches, never re-issues
+- reaper: RUNNING rows older than reaperThresholdMs, default 10 min, configurable — LOCKED
+- reaper threshold rule: must exceed instance deadline ceiling + read-back grace [reclaiming live work = two dispatchers, one mutation] — LOCKED
+- reaper routing: CREATE -> read-back (outcome unknown), UPDATE/DELETE -> PENDING (idempotent); neither increments attempt_count
+- reaper serializes replicas on pg_try_advisory_xact_lock; loser skips the pass
+- BUG-3 resolved as option A: ICF alignment via UpdateAttributeValuesOp — LOCKED
+- delta ops are op types ADD_VALUES / REMOVE_VALUES, uid-required, uid lane [same lane as UPDATE/DELETE so grant and revoke cannot overlap]
+- delta retry gate: retry only when manifest declares idempotentDelta, else INDETERMINATE; no read-back for deltas — LOCKED
+- UPDATE is always full replace, idempotent by construction, retries freely
+- pendingCounts counts AWAITING_READBACK as backlog [unresolved work the caller waits on]
+- migration numbering starts at 002; schema.sql is effectively 001, applied whole and idempotent; no runner in-package
+- openapi.yaml carries vocabulary schemas only [framework supplies machinery, not an HTTP surface]
+
+### REJECTED
+- `__DELTA__` marker on an ordinary UPDATE → the flag gated retry but never changed what executed, so the gate guarded a path the dispatcher could not reach; a delta is a different operation, not a replace wearing a marker
+- BUG-3 option B (declare deltas out of scope) → discards a working ICF-aligned surface already wired to breaker and deadline, to avoid four lines of dispatch
+- RFE-1 option 1 (reject fraction 0 at validation) → 0 has an obvious meaning; honouring it beats erroring on it
+- adding AWAITING_READBACK to four hand-written allow-lists → drop gate omission fails silently toward data loss; derive instead
+- second index alongside the pending index for deferred rows → two overlapping partial indexes on the hot path cost a write per transition for no extra coverage
+- read-back for deltas → no naming attribute to search on, no existence question to ask
+- in-memory lane hold for the deferral → the deferred row outlives the cycle that made it; hold must be durable
+
+### OPEN
+- event-loop lag threshold for sidecar split — DEFERRED [blocked_on: prod metrics] (carried from CP-1, CP-2, CP-3)
+- soak latency measured from enqueue, so a slow enqueue phase compresses priority separation [context: pg run reads 1.5x where memory reads 16x; instrument, not framework]
+- MemoryOperationStore.claimBatch is O(n) per cycle [context: test double only; drops 17.8k/s at 5k to 2.7k/s at 50k; not a framework ceiling]
+
+### STATE
+- phases 11-12: complete; BUG-1, BUG-2, BUG-3, RFE-1 all FIXED, bug log empty of open entries
+- tests: 428 with Postgres, 377 + 51 skipped without; websocket 242 unchanged
+- migration 002 verified against a seeded pre-migration database: rows preserved, terminal derived, drop gate refuses a partition holding AWAITING_READBACK
+- soak baseline recorded in soak.ts header: 50k memory 2,653/s, interactive p50 781ms vs batch 12,388ms, zero lane violations on both stores
+- feature/async-provisioning carries phases 11-12; main last merged at 491d2ac (phases 1-10)

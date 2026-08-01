@@ -35,7 +35,7 @@ Severity describes consequence, not effort.
 |---|---|---|---|---|
 | [BUG-1](#bug-1) | medium | FIXED | `ops/Dispatcher` | Create read-back sleeps inline, holding the lease and mutation slot |
 | [BUG-2](#bug-2) | high | FIXED | `ops/*` | Rows left `RUNNING` by a dead dispatcher are never recovered |
-| [BUG-3](#bug-3) | medium | OPEN | `ops/*` | Delta updates cannot be enqueued; the `idempotentDelta` gate guards an unreachable path |
+| [BUG-3](#bug-3) | medium | FIXED | `ops/*` | Delta updates cannot be enqueued; the `idempotentDelta` gate guards an unreachable path |
 | [RFE-1](#rfe-1) | low | FIXED | `config/runtime` | Interactive slice floor reserves a slot even at fraction 0 |
 
 ---
@@ -249,7 +249,7 @@ during implementation review and recorded in CP-3 OPEN.
 | | |
 |---|---|
 | **Severity** | medium |
-| **Status** | OPEN |
+| **Status** | FIXED in Phase 12 (option A) |
 | **Component** | `packages/core/src/ops/` (`schema.sql`, `Dispatcher`) |
 | **Reported** | 2026-08-01 |
 | **Affects** | `main@491d2ac` (Phase 7 onward) |
@@ -441,3 +441,34 @@ Option 2 over option 1 because a value that is documented, in range, and
 accepted should not then be disregarded — and `0` has an obvious meaning that
 the previous behaviour contradicted. To be ratified at CP-4 as an amendment to
 the CP-2 line.
+
+### BUG-3 — FIXED (Phase 12), option A
+
+Deltas are now their own operation types rather than a flag riding an ordinary
+update. `ADD_VALUES` and `REMOVE_VALUES` are accepted by the enqueue API,
+require a `uid`, and take the uid lane — the same lane as `UPDATE` and
+`DELETE`, so a grant and a revoke on one account cannot overlap. The dispatcher
+routes them to `facade.addAttributeValues` and `facade.removeAttributeValues`,
+which were already breaker- and deadline-wired and simply unreachable before.
+
+`isDeltaUpdate` and every `__DELTA__` reference are gone from code and docs.
+`UPDATE` is always a full replace, which is idempotent by construction, so it
+retries freely; the gate now sits on the operations it was written for.
+
+The retry gate does what CP-1 specified: on a deadline or a retryable error, a
+delta retries only when the manifest declares `idempotentDelta`, and otherwise
+records `INDETERMINATE` for reconciliation. No read-back — unlike a create,
+there is no naming attribute to search on and no existence question to ask.
+
+Option A over option B because the capability already existed in the SPI and in
+the facade; the defect was that nothing could reach it. Declaring deltas out of
+scope would have discarded a working ICF-aligned surface to avoid wiring four
+lines of dispatch.
+
+Verified, including the case that motivates the flag: against a list-valued
+target a replayed grant produces `["finance", "finance"]`, and the gate is what
+stops the dispatcher from doing that — a timed-out delta on a non-declaring
+connector is recorded `INDETERMINATE` with zero retries and the grant stays
+applied exactly once. A declaring connector retries and succeeds. A delta also
+adds without clobbering: granting `finance` to an account already holding
+`["eng", "vpn"]` yields all three, where a replace would have left one.
