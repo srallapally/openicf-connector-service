@@ -10,7 +10,15 @@ export type { Lease, ConnectorManagerOptions } from './registry/ConnectorManager
 export { CircuitBreaker } from './infra/CircuitBreaker.js';
 export { makeCache, type Cache } from './infra/Cache.js';
 export { RateLimiter } from './infra/RateLimiter.js';
-export { makePool, type Pooled } from './infra/Pool.js';
+export { makePool, PoolAcquireTimeoutError, type Pooled } from './infra/Pool.js';
+export {
+  noopMetrics,
+  prefixed,
+  RecordingMetricsSink,
+  startEventLoopLagMonitor,
+  METRICS,
+} from './infra/Metrics.js';
+export type { MetricsSink, MetricLabels, EventLoopLagMonitor } from './infra/Metrics.js';
 
 // ========== SPI - Types & Interfaces ==========
 export type * from './spi/types.js';
