@@ -18,7 +18,7 @@ Split rule for every borderline symbol: what the facade needs to execute one
 operation stays in the framework; what only the claim loop needs moves here.
 
 Design authority unchanged: framework `CLAUDE_CODE_PLAN.md`, checkpoint log
-CP-1..CP-4, `BUG_LOG.md`, `openapi.yaml`. The provisioning-operation parts of
+CP-1..CP-6, `BUG_LOG.md`, `openapi.yaml`. The provisioning-operation parts of
 `openapi.yaml` (202 contract, status endpoint, outcome taxonomy) move to this
 repo with the code.
 
@@ -225,7 +225,7 @@ in-flight batch attempt completes, not the ordering-satisfiable
 sidecar decision (open since CP-1) waits on.
 
 **Accept:** numbers recorded here; zero INDETERMINATE without injected faults;
-CP-6 in the framework log covering integration results (CP-5 was the
+CP-7 in the framework log covering integration results (CP-5 was the
 extraction).
 
 ## After P8
