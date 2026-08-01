@@ -24,5 +24,28 @@ export type * from './filter/ast.js';
 
 // ========== Loader ==========
 export { loadExternalConnectors } from './loader/ExternalLoader.js';
-export type { Manifest, InstanceDef, Instances, ConnectorKey } from './loader/types.js';
-export { toConnectorKey, parseConnectorKey } from './loader/types.js';
+export type { Manifest, InstanceDef, Instances, ConnectorKey, ConnectorCapabilities } from './loader/types.js';
+export { toConnectorKey, parseConnectorKey, resolveCapabilities } from './loader/types.js';
+
+// ========== Runtime configuration ==========
+export {
+  resolveRuntimeConfig,
+  isMutationOp,
+  OP_KINDS,
+  MUTATION_OP_KINDS,
+  READ_OP_KINDS,
+  RUNTIME_DEFAULTS,
+  ATTEMPT_DEADLINE_MIN_MS,
+  ATTEMPT_DEADLINE_MAX_MS,
+} from './config/runtime.js';
+export type {
+  OpKind,
+  MutationOpKind,
+  ReadOpKind,
+  PerOp,
+  RateLimitInput,
+  ReadCacheInput,
+  RuntimeConfigInput,
+  ResolvedRateLimit,
+  ResolvedRuntimeConfig,
+} from './config/runtime.js';

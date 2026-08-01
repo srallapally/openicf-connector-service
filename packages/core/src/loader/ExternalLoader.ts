@@ -130,7 +130,7 @@ export async function loadExternalConnectors(connectorsDir: string, registry: Co
           const instanceVersion = inst.connectorVersion ?? version;
           const mergedCfg = resolveEnvStrings({ ...baseCfg, ...(inst.config || {}) });
           const effectiveCfg = buildConfiguration ? await buildConfiguration(mergedCfg) : mergedCfg;
-          await registry.initInstance(inst.id, manifest.type, instanceVersion, effectiveCfg);
+          await registry.initInstance(inst.id, manifest.type, instanceVersion, effectiveCfg, inst.runtime);
           console.log(`[external] registered ${manifest.type}@${instanceVersion} instance: ${inst.id}`);
         }
       }

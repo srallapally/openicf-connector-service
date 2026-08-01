@@ -2,6 +2,8 @@ import type { ConnectorSpi, ConnectorConfig } from "../spi/types.js";
 import type { Configuration } from "../spi/configuration.js";
 import type { ConnectorKey } from "../loader/types.js";  // ← Import from loader types
 import { toConnectorKey } from "../loader/types.js";
+import type { RuntimeConfigInput, ResolvedRuntimeConfig } from "../config/runtime.js";
+import { resolveRuntimeConfig } from "../config/runtime.js";
 import semver from "semver";
 import { redactSecrets } from "./redact.js";
 
@@ -14,6 +16,8 @@ export interface ConnectorInstance {
     connectorKey: ConnectorKey;  // ← Now uses imported type
     config: ConnectorConfig;
     impl: ConnectorSpi;
+    /** Framework tuning for this instance, with defaults applied. */
+    runtime: ResolvedRuntimeConfig;
 }
 
 export class ConnectorRegistry {
@@ -31,7 +35,13 @@ export class ConnectorRegistry {
         this.configBuilders.set(key, builder);
   }
 
-  async initInstance(id: string, type: string, version: string, rawConfig: ConnectorConfig) {
+  async initInstance(
+      id: string,
+      type: string,
+      version: string,
+      rawConfig: ConnectorConfig,
+      runtimeConfig?: RuntimeConfigInput,
+  ) {
 
     // Reject before building config: a rejected duplicate must not execute the
     // new configuration's side effects. Overwriting silently orphaned the
@@ -44,6 +54,17 @@ export class ConnectorRegistry {
         `refusing to overwrite with ${type}@${version}. ` +
         `Call disposeInstance('${id}') first to replace it.`
       );
+    }
+
+    // Validate framework tuning before anything with side effects runs. A bad
+    // deadline or budget is an operator error in the deployment descriptor, and
+    // it should surface at registration rather than on the first operation that
+    // happens to read the bad setting.
+    let runtime: ResolvedRuntimeConfig;
+    try {
+      runtime = resolveRuntimeConfig(runtimeConfig);
+    } catch (e) {
+      throw new Error(`Connector instance '${id}': ${(e as Error).message}`, { cause: e });
     }
 
     const key = toConnectorKey(type, version);
@@ -69,7 +90,7 @@ export class ConnectorRegistry {
     });
 
     const connectorKey: ConnectorKey = { type, version };
-    this.instances.set(id, { id, type, connectorKey, config: configObj, impl: spi });
+    this.instances.set(id, { id, type, connectorKey, config: configObj, impl: spi, runtime });
     return this.instances.get(id)!;
   }
     getVersions(type: string): string[] {
