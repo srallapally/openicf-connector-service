@@ -197,3 +197,42 @@
 - migration 002 verified against a seeded pre-migration database: rows preserved, terminal derived, drop gate refuses a partition holding AWAITING_READBACK
 - soak baseline recorded in soak.ts header: 50k memory 2,653/s, interactive p50 781ms vs batch 12,388ms, zero lane violations on both stores
 - feature/async-provisioning carries phases 11-12; main last merged at 491d2ac (phases 1-10)
+
+---
+## CP-5 | 2026-08-01T19:06:39Z
+<!-- topic: F13 extraction, framework/service boundary -->
+
+### DECIDED
+- boundary: framework executes one connector operation; the provisioning service owns the claim loop — LOCKED
+- split rule: what the facade needs to execute one operation stays; what only the claim loop needs moves — LOCKED
+- three-repo end state: governance-connector-framework (execution), provisioning service (queue/dispatch/routes), external-connectors (bundles)
+- framework keeps: SPI, loader, registry, manager, facade, infra, capability flags, ConnectorError
+- framework loses: src/ops entirely (OperationStore, Dispatcher, admission, schema.sql, migrations)
+- OperationOptions keeps abortSignal, deadlineEpochMs, priority [ICF options bag is extensible; facade enforces the deadline for any caller; priority is a hint anyone may set]
+- OperationOutcome / OperationStatus / OperationPendingStatus leave [they describe a durable row's lifecycle, which only the claim loop has]
+- runtime config splits: core keeps attemptDeadlineMs, mutationConcurrency, readConcurrency, readCache; service takes interactiveSliceFraction and per-op rateLimits
+- removed settings are rejected by name at validation, not silently ignored [an instance config still carrying them must say so]
+- testing subpath `@governance-connector-framework/core/testing` ships FakeConnector, async, clock [ICF test-common precedent; connector authors need a credible target]
+- vitest becomes an optional peerDependency [only the clock helper needs it; nothing in the main entry imports it]
+- pg dependency removed from core [OperationStore was its only consumer]
+- metric names split with the code: breaker, live instances, pool, event-loop lag stay; backlog/claim/outcome/attempt/reaped leave
+- CI postgres job removed from the framework [nothing left here needs a database]
+- bug log entries stay as history, marked component-moved; BUG-4 travels to the service as its first open entry
+
+### REJECTED
+- keeping OperationOutcome in core "because connectors might want it" → a connector returns or throws; it never reaches a terminal status, and keeping the taxonomy would make the type surface imply a queue the package does not own
+- keeping MemoryOperationStore / contract suite / pg harness / soak in core → they test the claim loop, which is leaving; the contract suite is meaningless without both store implementations
+- shipping FakeConnector from the main entry → would put vitest in the import graph of every production consumer
+- leaving interactiveSliceFraction in core "since the facade reads runtime config" → the facade never consults it; see BUG-4, nothing consults it at all yet
+
+### OPEN
+- BUG-4: interactive slice computed but never enforced — MOVED to the service, still open [decided at CP-5 to fix where the dispatcher lands]
+- event-loop lag threshold for sidecar split — DEFERRED [blocked_on: prod metrics] (carried from CP-1..CP-4)
+- provisioning service repo does not yet exist; P0-P8 blocked on it
+
+### STATE
+- F13 complete: core 220 tests green, websocket 242 unchanged, both packages build
+- core dependencies now lru-cache, semver, tarn; no pg, no database tier, no postgres CI job
+- acceptance grep clean: no OperationStore/Dispatcher/OperationOutcome outside a signpost comment in spi/types.ts
+- framework branch feature/async-provisioning; main last merged at 491d2ac (phases 1-10, still carrying ops)
+- extraction source for the service: the commit immediately before this one (phases 11-12 complete, ops intact)

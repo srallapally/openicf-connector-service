@@ -4,6 +4,12 @@ Tracking for defects and enhancement requests found outside the normal review
 cycle. Append-only in spirit: entries are edited to change `Status` and to add
 resolution notes, but the original report is not rewritten.
 
+**Component moved.** The operation table, dispatcher, and admission gate left
+this repository for the provisioning service at CP-5. BUG-1, BUG-2, BUG-3, and
+RFE-1 are retained as history: they were found and fixed here, and the fixes
+travelled with the code. BUG-4 is open and travels too — it is recorded in the
+service's own bug log as the entry to act on.
+
 Companion to the design record. `CLAUDE_CODE_PLAN.md` says what was planned and
 `governance-connector-framework_checkpoint_log.md` says what was decided; this
 file says what is wrong with what was built.
@@ -37,7 +43,7 @@ Severity describes consequence, not effort.
 | [BUG-2](#bug-2) | high | FIXED | `ops/*` | Rows left `RUNNING` by a dead dispatcher are never recovered |
 | [BUG-3](#bug-3) | medium | FIXED | `ops/*` | Delta updates cannot be enqueued; the `idempotentDelta` gate guards an unreachable path |
 | [RFE-1](#rfe-1) | low | FIXED | `config/runtime` | Interactive slice floor reserves a slot even at fraction 0 |
-| [BUG-4](#bug-4) | medium | OPEN | `ops/Dispatcher` | The reserved interactive slice is computed but never enforced |
+| [BUG-4](#bug-4) | medium | MOVED | `ops/Dispatcher` | The reserved interactive slice is computed but never enforced |
 
 ---
 
@@ -387,7 +393,7 @@ line.
 | | |
 |---|---|
 | **Severity** | medium |
-| **Status** | OPEN |
+| **Status** | MOVED to the provisioning service at CP-5 — still open there |
 | **Component** | `packages/core/src/ops/Dispatcher.ts` (`computeAvailability`) |
 | **Reported** | 2026-08-01 |
 | **Affects** | `main@491d2ac` (Phase 7 onward) and the branch |

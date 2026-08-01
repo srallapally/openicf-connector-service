@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { ConnectorRegistry } from "../src/registry/ConnectorRegistry.js";
 import { ConnectorManager } from "../src/registry/ConnectorManager.js";
-import { makeFakeConnector, FakeTarget, type FakeConnector } from "./harness/FakeConnector.js";
-import { deferred } from "./harness/async.js";
+import { makeFakeConnector, FakeTarget, type FakeConnector } from "../src/testing/FakeConnector.js";
+import { deferred } from "../src/testing/async.js";
 
 const OC = "__ACCOUNT__";
 

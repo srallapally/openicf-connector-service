@@ -13,9 +13,7 @@ describe("resolveRuntimeConfig — defaults", () => {
         const r = resolveRuntimeConfig();
         expect(r.mutationConcurrency).toBe(10);
         expect(r.readConcurrency).toBe(10);
-        expect(r.interactiveSliceFraction).toBe(0.2);
         expect(r.readCache).toBeNull();
-        expect(r.rateLimits).toEqual({});
         for (const op of OP_KINDS) {
             expect(r.attemptDeadlineMs[op], op).toBe(RUNTIME_DEFAULTS.attemptDeadlineMs);
         }
@@ -112,89 +110,6 @@ describe("resolveRuntimeConfig — concurrency budgets", () => {
     });
 });
 
-describe("resolveRuntimeConfig — interactive slice floor rule", () => {
-    // CP-2: fraction of the mutation budget, ceil(), at least one slot once the
-    // budget is 2 or more, none at a budget of 1.
-    const cases: Array<[budget: number, slots: number]> = [
-        [1, 0],
-        [2, 1],
-        [3, 1],
-        [10, 2],
-    ];
-
-    for (const [budget, slots] of cases) {
-        it(`reserves ${slots} slot(s) at a budget of ${budget}`, () => {
-            const r = resolveRuntimeConfig({ mutationConcurrency: budget });
-            expect(r.interactiveSlots).toBe(slots);
-            expect(r.batchSlots).toBe(budget - slots);
-        });
-    }
-
-    it("ceils rather than floors, so a small fraction still reserves a whole slot", () => {
-        // 0.2 * 3 = 0.6; flooring would leave interactive work unreserved on
-        // exactly the small instances where contention bites hardest.
-        expect(resolveRuntimeConfig({ mutationConcurrency: 3 }).interactiveSlots).toBe(1);
-        expect(resolveRuntimeConfig({ mutationConcurrency: 6, interactiveSliceFraction: 0.5 }).interactiveSlots).toBe(3);
-    });
-
-    it("treats fraction 0 as an explicit opt-out (RFE-1)", () => {
-        // The floor exists to stop a small positive fraction rounding down to
-        // nothing, not to override an operator who asked for none. Accepting a
-        // documented, in-range value and then ignoring it was the surprise.
-        expect(resolveRuntimeConfig({ mutationConcurrency: 8, interactiveSliceFraction: 0 }).interactiveSlots).toBe(0);
-        expect(resolveRuntimeConfig({ mutationConcurrency: 8, interactiveSliceFraction: 0 }).batchSlots).toBe(8);
-        expect(resolveRuntimeConfig({ mutationConcurrency: 1, interactiveSliceFraction: 0 }).interactiveSlots).toBe(0);
-    });
-
-    it("still floors every positive fraction at one slot", () => {
-        // 0.01 of a budget of 2 is 0.02; without the floor that rounds to
-        // nothing on exactly the instances where contention bites hardest.
-        expect(resolveRuntimeConfig({ mutationConcurrency: 2, interactiveSliceFraction: 0.01 }).interactiveSlots).toBe(1);
-        expect(resolveRuntimeConfig({ mutationConcurrency: 20, interactiveSliceFraction: 0.001 }).interactiveSlots).toBe(1);
-    });
-
-    it("never reserves more than the whole budget", () => {
-        const r = resolveRuntimeConfig({ mutationConcurrency: 5, interactiveSliceFraction: 1 });
-        expect(r.interactiveSlots).toBe(5);
-        expect(r.batchSlots).toBe(0);
-    });
-
-    it("rejects a fraction outside [0,1]", () => {
-        expect(() => resolveRuntimeConfig({ interactiveSliceFraction: -0.1 })).toThrow(/between 0 and 1/);
-        expect(() => resolveRuntimeConfig({ interactiveSliceFraction: 1.5 })).toThrow(/between 0 and 1/);
-    });
-});
-
-describe("resolveRuntimeConfig — rate limits", () => {
-    it("is off by default", () => {
-        expect(resolveRuntimeConfig({}).rateLimits).toEqual({});
-    });
-
-    it("resolves a per-op limit and leaves the timeout optional", () => {
-        const r = resolveRuntimeConfig({
-            rateLimits: {
-                create: { requestLimit: 100, requestPeriodMs: 60_000, requestTimeoutMs: 5_000 },
-                get: { requestLimit: 500, requestPeriodMs: 1_000 },
-            },
-        });
-        expect(r.rateLimits.create).toEqual({ requestLimit: 100, requestPeriodMs: 60_000, requestTimeoutMs: 5_000 });
-        expect(r.rateLimits.get).toEqual({ requestLimit: 500, requestPeriodMs: 1_000, requestTimeoutMs: undefined });
-        expect(r.rateLimits.update).toBeUndefined();
-    });
-
-    it("rejects a malformed limit", () => {
-        expect(() => resolveRuntimeConfig({ rateLimits: { create: { requestLimit: 0, requestPeriodMs: 1000 } } }))
-            .toThrow(/requestLimit must be at least 1/);
-        expect(() => resolveRuntimeConfig({ rateLimits: { create: { requestLimit: 5 } as never } }))
-            .toThrow(/requestPeriodMs must be a number/);
-    });
-
-    it("rejects an unrecognised field inside a limit", () => {
-        expect(() => resolveRuntimeConfig({ rateLimits: { create: { requestLimit: 5, requestPeriodMs: 1, burst: 2 } as never } }))
-            .toThrow(/burst is not a recognised setting/);
-    });
-});
-
 describe("resolveRuntimeConfig — read cache", () => {
     it("is absent unless configured", () => {
         expect(resolveRuntimeConfig({}).readCache).toBeNull();
@@ -211,6 +126,16 @@ describe("resolveRuntimeConfig — read cache", () => {
 });
 
 describe("resolveRuntimeConfig — typo protection", () => {
+    it("rejects the scheduling settings that moved to the provisioning service", () => {
+        // interactiveSliceFraction and rateLimits are claim-loop concerns and
+        // left at CP-5. An instance config still carrying them should say so
+        // rather than silently ignore them.
+        expect(() => resolveRuntimeConfig({ interactiveSliceFraction: 0.2 } as never))
+            .toThrow(/interactiveSliceFraction is not a recognised setting/);
+        expect(() => resolveRuntimeConfig({ rateLimits: {} } as never))
+            .toThrow(/rateLimits is not a recognised setting/);
+    });
+
     it("rejects an unknown top-level key rather than ignoring it", () => {
         // A silently ignored typo in a concurrency budget is indistinguishable
         // from the default until production load makes it obvious.

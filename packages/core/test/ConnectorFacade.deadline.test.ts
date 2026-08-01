@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { ConnectorFacade, DeadlineExpiredError, isDeadlineExpired } from "../src/registry/ConnectorFacade.js";
 import { resolveRuntimeConfig } from "../src/config/runtime.js";
-import { makeFakeConnector } from "./harness/FakeConnector.js";
-import { deferred } from "./harness/async.js";
+import { makeFakeConnector } from "../src/testing/FakeConnector.js";
+import { deferred } from "../src/testing/async.js";
 import type { OperationOptions } from "../src/spi/types.js";
 
 afterEach(() => { vi.useRealTimers(); });

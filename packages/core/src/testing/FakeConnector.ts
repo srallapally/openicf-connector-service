@@ -9,8 +9,8 @@
 // cases are exactly the ones where the target's state and the framework's
 // belief about it have diverged.
 
-import { ConnectorError } from "../../src/spi/errors.js";
-import type { ConnectorErrorCode } from "../../src/spi/errors.js";
+import { ConnectorError } from "../spi/errors.js";
+import type { ConnectorErrorCode } from "../spi/errors.js";
 import type {
   AttributeValue,
   ConnectorObject,
@@ -18,8 +18,8 @@ import type {
   OperationOptions,
   Schema,
   SyncToken,
-} from "../../src/spi/types.js";
-import type { ResultsHandler, SearchResult } from "../../src/spi/icf-compat.js";
+} from "../spi/types.js";
+import type { ResultsHandler, SearchResult } from "../spi/icf-compat.js";
 
 export const DEFAULT_NAME_ATTRIBUTE = "__NAME__";
 export const DEFAULT_OBJECT_CLASS = "__ACCOUNT__";

@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ConnectorRegistry } from "../src/registry/ConnectorRegistry.js";
 import { ConnectorManager } from "../src/registry/ConnectorManager.js";
-import { makeFakeConnector } from "./harness/FakeConnector.js";
-import { deferred, barrier, flushMicrotasks } from "./harness/async.js";
+import { makeFakeConnector } from "../src/testing/FakeConnector.js";
+import { deferred, barrier, flushMicrotasks } from "../src/testing/async.js";
 
 /** A manual clock, so TTL assertions never depend on wall time. */
 function testClock(start = 1_000_000) {
@@ -392,7 +392,6 @@ describe("registry interaction", () => {
 
         const inst = await registry.materializeInstance("tuned");
         expect(inst.runtime.mutationConcurrency).toBe(4);
-        expect(inst.runtime.interactiveSlots).toBe(1);
     });
 
     it("shares one build between concurrent materialize calls", async () => {

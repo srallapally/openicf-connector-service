@@ -13,10 +13,6 @@ build/
 # Ignore log files
 *.log
 
-# Throwaway PostgreSQL cluster created by scripts/test-pg.sh for the
-# integration suite. Disposable: delete it and the script rebuilds it.
-.pgdata/
-
 # Ignore temporary files
 *.tmp
 

@@ -39,26 +39,9 @@ export type { Manifest, InstanceDef, Instances, ConnectorKey, ConnectorCapabilit
 export { toConnectorKey, parseConnectorKey, resolveCapabilities } from './loader/types.js';
 
 // ========== Async operation store ==========
-export { OperationStore, OPERATIONS_SCHEMA_PATH } from './ops/OperationStore.js';
-export type {
-  OperationType,
-  OperationStoreApi,
-  EnqueueInput,
-  EnqueueResult,
-  ClaimedOperation,
-  OperationStatusRow,
-  PendingCounts,
-} from './ops/OperationStore.js';
-export { Dispatcher } from './ops/Dispatcher.js';
-export type { DispatcherConfig, DispatcherDeps } from './ops/Dispatcher.js';
-export {
-  admitAndEnqueue,
-  laneKeyFor,
-  AdmissionRejectedError,
-  isAdmissionRejected,
-  ADMISSION_DEFAULTS,
-} from './ops/admission.js';
-export type { AdmissionCaps, AdmitInput } from './ops/admission.js';
+// Moved to the provisioning service at CP-5. The operation table, dispatcher,
+// and admission gate are claim-loop concerns; this package executes one
+// operation at a time and knows nothing about a queue.
 
 // ========== Runtime configuration ==========
 export {
@@ -76,9 +59,11 @@ export type {
   MutationOpKind,
   ReadOpKind,
   PerOp,
-  RateLimitInput,
   ReadCacheInput,
   RuntimeConfigInput,
-  ResolvedRateLimit,
   ResolvedRuntimeConfig,
 } from './config/runtime.js';
+
+// ========== Testing ==========
+// Test doubles ship under the `/testing` subpath, not from here, so nothing a
+// production consumer imports can reach vitest.

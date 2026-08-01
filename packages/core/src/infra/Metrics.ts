@@ -2,6 +2,10 @@
 //
 // Metrics as an interface, not an implementation.
 //
+// Names here cover only what this package can observe: breaker transitions,
+// live instances, pool occupancy, and event-loop lag. Operation-level metrics
+// belong to whoever owns the claim loop.
+//
 // The framework is a library: it cannot know whether the embedder runs
 // Prometheus, OpenTelemetry, Cloud Monitoring, or nothing at all, and pulling
 // in a client library would force that choice on every consumer. So the
@@ -27,30 +31,11 @@ export interface MetricsSink {
 
 /** Metric names the framework emits. Stable; treat as API. */
 export const METRICS = {
-  /**
-   * PENDING operations per instance and class.
-   *
-   * With oldest-pending age, the primary health signal: a backlog that is
-   * merely large is fine if it is draining, and a small one that is not
-   * draining is not.
-   */
-  BACKLOG_DEPTH: "gcf.operations.backlog_depth",
-  /** Age of the oldest PENDING operation, in ms. */
-  OLDEST_PENDING_AGE_MS: "gcf.operations.oldest_pending_age_ms",
-  /** Wall time of one claim cycle, in ms. */
-  CLAIM_CYCLE_MS: "gcf.dispatcher.claim_cycle_ms",
-  /** Rows claimed per cycle. */
-  CLAIMED: "gcf.dispatcher.claimed",
-  /** Terminal outcomes, labelled by outcome and op type. */
-  OUTCOME: "gcf.operations.outcome",
-  /** Requeues, labelled by reason. */
-  REQUEUED: "gcf.operations.requeued",
-  /** Creates parked to await a read-back rather than holding a slot. */
-  DEFERRED_READBACK: "gcf.operations.deferred_readback",
-  /** Rows recovered from a dead dispatcher, labelled by the route taken. */
-  REAPED: "gcf.operations.reaped",
-  /** End-to-end attempt latency per instance, in ms. */
-  ATTEMPT_LATENCY_MS: "gcf.operations.attempt_latency_ms",
+  // Backlog depth, oldest-pending age, claim-cycle duration, outcome counts,
+  // requeues, deferrals, reaper routes, and attempt latency moved to the
+  // provisioning service at CP-5 -- every one of them measures the claim loop.
+  // What stays is what this package can observe on its own.
+
   /** Circuit breaker state transitions. */
   BREAKER_TRANSITION: "gcf.breaker.transition",
   /** Event loop lag, in ms. The signal that decides the sidecar split. */
