@@ -43,7 +43,7 @@ Severity describes consequence, not effort.
 | [BUG-2](#bug-2) | high | FIXED | `ops/*` | Rows left `RUNNING` by a dead dispatcher are never recovered |
 | [BUG-3](#bug-3) | medium | FIXED | `ops/*` | Delta updates cannot be enqueued; the `idempotentDelta` gate guards an unreachable path |
 | [RFE-1](#rfe-1) | low | FIXED | `config/runtime` | Interactive slice floor reserves a slot even at fraction 0 |
-| [BUG-4](#bug-4) | medium | MOVED | `ops/Dispatcher` | The reserved interactive slice is computed but never enforced |
+| [BUG-4](#bug-4) | medium | MOVED → FIXED downstream | `ops/Dispatcher` | The reserved interactive slice is computed but never enforced |
 | [BUG-5](#bug-5) | high | FIXED | `core/package.json` | `core` imports `zod` but never declared it; it resolved only by monorepo hoisting |
 | [BUG-6](#bug-6) | high | FIXED | `core/testing` | The testing barrel eagerly loads the vitest-dependent clock, so `makeFakeConnector` is unusable outside a vitest worker |
 
@@ -395,7 +395,7 @@ line.
 | | |
 |---|---|
 | **Severity** | medium |
-| **Status** | MOVED to the provisioning service at CP-5 — still open there |
+| **Status** | MOVED to the provisioning service at CP-5 — **FIXED there** in Phase P1.5, see [governance-provisioning-service BUG-4](https://github.com/srallapally/governance-provisioning-service/blob/main/BUG_LOG.md#bug-4) |
 | **Component** | `packages/core/src/ops/Dispatcher.ts` (`computeAvailability`) |
 | **Reported** | 2026-08-01 |
 | **Affects** | `main@491d2ac` (Phase 7 onward) and the branch |
