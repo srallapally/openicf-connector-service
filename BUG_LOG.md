@@ -37,6 +37,7 @@ Severity describes consequence, not effort.
 | [BUG-2](#bug-2) | high | FIXED | `ops/*` | Rows left `RUNNING` by a dead dispatcher are never recovered |
 | [BUG-3](#bug-3) | medium | FIXED | `ops/*` | Delta updates cannot be enqueued; the `idempotentDelta` gate guards an unreachable path |
 | [RFE-1](#rfe-1) | low | FIXED | `config/runtime` | Interactive slice floor reserves a slot even at fraction 0 |
+| [BUG-4](#bug-4) | medium | OPEN | `ops/Dispatcher` | The reserved interactive slice is computed but never enforced |
 
 ---
 
@@ -377,6 +378,84 @@ a tuning knob. Either way, a value should not be accepted and then disregarded.
 Whichever is chosen wants a CP entry, since it either amends or confirms a CP-2
 line.
 
+
+---
+
+<a id="bug-4"></a>
+## BUG-4 — The reserved interactive slice is computed but never enforced
+
+| | |
+|---|---|
+| **Severity** | medium |
+| **Status** | OPEN |
+| **Component** | `packages/core/src/ops/Dispatcher.ts` (`computeAvailability`) |
+| **Reported** | 2026-08-01 |
+| **Affects** | `main@491d2ac` (Phase 7 onward) and the branch |
+
+### Symptom
+
+`resolveRuntimeConfig` computes `interactiveSlots` and `batchSlots`. Nothing
+reads them. A repository-wide search finds assignments in `config/runtime.ts`
+and no consumer anywhere else.
+
+`computeAvailability` offers each instance its whole mutation budget:
+
+```ts
+const free = runtime.mutationConcurrency - inFlight;
+out.set(instanceId, free);
+```
+
+Batch work is never capped at "budget minus slice", so a batch backlog can
+occupy every slot on an instance.
+
+### Impact
+
+This is a gap against a LOCKED decision. CP-1: *"lane concurrency: reserved
+interactive slice per instance."* CP-2: *"slice asymmetry: interactive may use
+all slots, batch capped at budget minus slice."* Half of that is implemented —
+interactive may use all slots — and the reservation is not.
+
+What partly covers for it is the claim query's ordering, which puts interactive
+ahead of batch. An interactive operation arriving at a saturated instance is
+first in line for the next slot to free, rather than finding one held for it.
+So the failure is bounded by one attempt duration rather than unbounded
+starvation, which is why this is `medium` and not `high`: work is delayed, not
+lost, and no outcome is wrong.
+
+It is still the wrong mechanism. The reservation exists so that interactive
+latency does not depend on how long a batch attempt takes against a slow
+target. With a 60 s create deadline on a Workday-class instance and every slot
+busy, an interactive write waits for one of those attempts to finish. The
+measured 781 ms interactive p50 in the soak comes from ordering against fast
+fake connectors, and would not survive a slow target.
+
+Worth stating plainly: **RFE-1 changed `computeInteractiveSlots`, a function
+whose result nothing consumes.** The change was correct in itself and its test
+asserts real behaviour of a pure function, but it had no runtime effect. Both
+that entry and this one are accurate; they simply describe different layers.
+
+### Proposed fix
+
+`computeAvailability` needs to offer a per-class cap rather than one number,
+and the store's claim needs to honour it — the current `claimBatch` takes a
+single per-instance integer and orders interactive first within it.
+
+The smallest shape that matches CP-2: pass both numbers, and have the claim
+take up to `batchSlots` batch rows and up to `mutationConcurrency` rows total,
+so interactive can fill the remainder. That means counting in-flight work per
+class as well as per instance, which the dispatcher does not currently do.
+
+Not urgent enough to rush into the extraction. But whoever owns the dispatcher
+after the split owns this, and it should be decided before the config for it is
+split across two repos.
+
+### Notes
+
+Found while assessing the extraction boundary, not by a failing test — the soak
+asserts `interactive p50 < batch p50`, which ordering alone satisfies. A test
+that would have caught it: saturate an instance with slow batch work, then
+enqueue an interactive operation and assert it starts before any in-flight
+batch attempt completes.
 
 ---
 
