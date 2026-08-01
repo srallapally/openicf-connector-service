@@ -96,3 +96,57 @@
 - CP-1 open items 1-5: resolved
 - SPI contract diff (spi/types.ts @9136e57): not_started, next artifact
 - op table DDL: not_started
+
+---
+## CP-3 | 2026-08-01T17:44:13Z
+<!-- topic: phases 1-10 implemented, reviewed, merged -->
+
+### DECIDED
+- registry split: registerInstance records, materializeInstance builds; in-flight promise shared — LOCKED
+- initInstance stays eager (register+materialize) [websocket reads .impl off return]
+- runtime config validation hand-rolled; zod is a websocket dep, not core
+- op table PK (id, created_at) [Postgres: partition key required in every unique key] — LOCKED
+- idempotent enqueue via pg_advisory_xact_lock(sha256(key)) + lookup, not a unique index — LOCKED
+- claim SQL: collapse lanes to one row BEFORE per-instance ranking
+- backoff enforced by excluding the lane from claim, never by bouncing the row
+- delta update marked `__DELTA__: true` on payload; absent ⇒ treated as replace
+- DeadlineExpiredError distinct from ConnectorError; own-timer expiry overrides connector AbortError — LOCKED
+- facade search: caller handler ⇒ passthrough, no buffering; no handler ⇒ list form (buffering = caller's choice)
+- two breakers per facade, maxConcurrent from mutation/read budgets
+- pooledSpi: proxy over tarn; probe resource for shape; flags copied (searchStreaming is data)
+- pool acquire timeout = min(configured, remaining deadline); aborts the tarn request, not just abandons
+- capabilities keyed by type@version [describe the build, not the instance]
+- MetricsSink interface, noop default, no client library — LOCKED
+- backlog depth sampled 1-in-40 cycles, before the claim
+- event-loop lag: NaN window ⇒ emit 0
+- test harness: FakeConnector + MemoryOperationStore + one shared contract suite
+- scripts/test-pg.sh runs server-side as postgres user [initdb refuses root]
+- CI: postgres:16 job added; existing job stays database-free and is the gate
+- merge method rebase [repo blocks merge commits; squash would collapse 11 phase commits]
+- design authority docs committed to repo root
+
+### REJECTED
+- squash merge → collapses one-phase-per-commit history
+- zod added to core → violates no-new-runtime-deps-except-pg
+- initInstance registration-only by default → breaks websocket .impl reads, same phase forbids touching it
+- unique (idempotency_key, created_at) as dedup → timestamps differ, never collides, enforces nothing
+- rank before lane collapse → same-lane backlog burns instance cap on discarded rows
+- requeue deferred rows during backoff → requeue increments attempt_count, exhausts retry budget without attempting
+- manager clock passed into facade → desyncs from the setTimeout the deadline uses
+- vitest import in pg connection helpers → throws under plain tsx (soak script)
+
+### OPEN
+- interactive slice floor reserves 1 slot at fraction 0 [context: literal CP-2 rule; ceil() already guarantees >=1 for any positive fraction, so floor only bites at exactly 0]
+- stale-RUNNING reaper absent [context: dispatcher death pins rows RUNNING, blocks partition drop past retention]
+- `__DELTA__` marker unratified [context: plan required the gate, never named the marker]
+- event-loop lag threshold for sidecar split — DEFERRED [blocked_on: prod metrics] (carried from CP-1, CP-2)
+
+### STATE
+- phases 1-10 + 1.5: complete [supersedes CP-1: SPI contract diff, op table DDL; supersedes CP-2: same]
+- CP-1 core defects: all closed [supersedes CP-1: scan invalidation, cache prealloc, eager boot, pool unwired, breaker hardcoded, initInstance TOCTOU, refcount/eviction, facade stream buffering, metrics]
+- merged to main@491d2ac via rebase (PR #39, 12 commits)
+- tests: core 333 + 33 pg-only, websocket 242 unchanged; both CI jobs green
+- verified on PostgreSQL 16: DDL, drop gate, 3-way concurrent claim, 8-way idempotent enqueue
+- soak vs real dispatcher: 4k ops, 0 lane violations, interactive p50 64ms vs batch 151ms
+- defects found+fixed in own phases: lane double-claim, non-uuid id 500, backoff attempt inflation, lag NaN
+- feature/async-provisioning @ a7f027e, restarted on merged main; local main untouched
