@@ -3,12 +3,12 @@ import { OperationStore } from "../../src/ops/OperationStore.js";
 import { runOperationStoreContract } from "./operation-store.contract.js";
 import {
   applySchema,
-  describeWithPg,
   openPool,
   probePostgres,
   resetOperations,
   type PgPool,
 } from "../harness/pg.js";
+import { describeWithPg } from "../harness/describeWithPg.js";
 
 // Top-level await: the probe has to finish before suites are registered, which
 // is what lets an unreachable server skip rather than fail.

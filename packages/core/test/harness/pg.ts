@@ -10,7 +10,9 @@
 // Bring a server up with `bash scripts/test-pg.sh`, which prints the
 // DATABASE_URL to export.
 
-import { describe } from "vitest";
+// Deliberately free of any vitest import: the soak script (plain tsx, no test
+// runner) uses these helpers, and importing vitest outside a worker throws.
+// The vitest-only wrapper lives in ./describeWithPg.ts.
 import { readFile } from "node:fs/promises";
 import { OPERATIONS_SCHEMA_PATH } from "../../src/ops/OperationStore.js";
 
@@ -47,20 +49,6 @@ export async function probePostgres(): Promise<PgProbe> {
   } finally {
     await pool.end().catch(() => { /* probe teardown is best effort */ });
   }
-}
-
-/**
- * Register a suite that needs Postgres, skipping it when none is available.
- *
- * The skip reason goes into the suite name so a skipped run says why, rather
- * than looking like a suite someone disabled and forgot.
- */
-export function describeWithPg(probe: PgProbe, name: string, fn: () => void): void {
-  if (!probe.available) {
-    describe.skip(`${name} [skipped: ${probe.reason}]`, fn);
-    return;
-  }
-  describe(name, fn);
 }
 
 /** Open a pool against DATABASE_URL. Caller owns `end()`. */

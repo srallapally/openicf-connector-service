@@ -95,6 +95,8 @@ export async function loadExternalConnectors(connectorsDir: string, registry: Co
       const type = (manifest.type ?? manifest.id ?? d.name).trim();
       const version = manifest.version.trim();
       await registry.registerFactory(type,version, mod.default);
+      // Capability flags travel with the connector build, not the instance.
+      registry.registerCapabilities(type, version, manifest);
       console.log(`[external] loaded connector: ${type}@${version}`);
 
 

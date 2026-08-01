@@ -1,7 +1,7 @@
 import type { ConnectorSpi, ConnectorConfig } from "../spi/types.js";
 import type { Configuration } from "../spi/configuration.js";
-import type { ConnectorKey } from "../loader/types.js";  // ← Import from loader types
-import { toConnectorKey } from "../loader/types.js";
+import type { ConnectorKey, ConnectorCapabilities } from "../loader/types.js";  // ← Import from loader types
+import { toConnectorKey, resolveCapabilities } from "../loader/types.js";
 import type { RuntimeConfigInput, ResolvedRuntimeConfig } from "../config/runtime.js";
 import { resolveRuntimeConfig } from "../config/runtime.js";
 import semver from "semver";
@@ -18,6 +18,8 @@ export interface ConnectorInstance {
     impl: ConnectorSpi;
     /** Framework tuning for this instance, with defaults applied. */
     runtime: ResolvedRuntimeConfig;
+    /** Manifest capability flags for this connector type and version. */
+    capabilities: ConnectorCapabilities;
 }
 
 /**
@@ -41,6 +43,7 @@ export class ConnectorRegistry {
   private instances = new Map<string, ConnectorInstance>();
   private definitions = new Map<string, InstanceDefinition>();
   private configBuilders = new Map<string, ConfigBuilder>();
+  private capabilities = new Map<string, ConnectorCapabilities>();
 
   /**
    * In-flight materializations, keyed by instance id.
@@ -59,6 +62,40 @@ export class ConnectorRegistry {
   registerConfigBuilder(type: string, version: string, builder: ConfigBuilder) {
         const key = toConnectorKey(type, version);  // ← Use helper
         this.configBuilders.set(key, builder);
+  }
+
+  /**
+   * Record a connector's manifest capability flags.
+   *
+   * Keyed by type and version rather than by instance: the flags describe what
+   * the connector code can do, which cannot vary between two instances of the
+   * same build.
+   */
+  registerCapabilities(
+      type: string,
+      version: string,
+      caps: Partial<ConnectorCapabilities>,
+  ): void {
+    this.capabilities.set(toConnectorKey(type, version), resolveCapabilities(caps));
+  }
+
+  /** Capability flags for a connector, defaulting every flag to false. */
+  getCapabilities(type: string, version: string): ConnectorCapabilities {
+    return this.capabilities.get(toConnectorKey(type, version)) ?? resolveCapabilities({});
+  }
+
+  /**
+   * Capability flags for a registered instance.
+   *
+   * Available without materializing, so the dispatcher can decide whether a
+   * create is eligible for read-back before it builds anything.
+   */
+  capabilitiesOf(instanceId: string): ConnectorCapabilities {
+    const built = this.instances.get(instanceId);
+    if (built) return built.capabilities;
+    const def = this.definitions.get(instanceId);
+    if (!def) return resolveCapabilities({});
+    return this.getCapabilities(def.type, def.version);
   }
 
   /**
@@ -174,6 +211,7 @@ export class ConnectorRegistry {
     const connectorKey: ConnectorKey = { type, version };
     const instance: ConnectorInstance = {
       id, type, connectorKey, config: configObj, impl: spi, runtime,
+      capabilities: this.getCapabilities(type, version),
     };
     this.instances.set(id, instance);
     return instance;
