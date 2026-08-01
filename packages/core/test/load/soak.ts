@@ -17,6 +17,40 @@
 // measured is the shipping scheduler: its claim cycle, lane exclusion,
 // per-instance budgets, and priority ordering.
 
+// ---------------------------------------------------------------------------
+// LAST MEASURED BASELINE — 2026-08-01, Phase 11
+// ---------------------------------------------------------------------------
+// Node v22.22.2, 4 vCPU sandbox, 4 instances, mutation budget 10 each,
+// ~2% interactive, claim batch 100.
+//
+//   store   ops     enqueue      drain        batch p50   interactive p50   lanes
+//   memory  50000   349,006/s    2,653/s      12,388 ms   781 ms            0
+//   memory   5000   ~350,000/s  17,758/s         n/a      n/a               0
+//   pg16     5000       546/s    1,168/s       7,064 ms   4,782 ms          0
+//
+// Read these with two caveats.
+//
+// 1. The in-memory drain rate falls with backlog size -- 17,758/s at 5k
+//    against 2,653/s at 50k -- because MemoryOperationStore.claimBatch scans
+//    every row each cycle to build the blocked-lane set and the candidate
+//    list. That is O(n) per cycle by construction and is a property of the
+//    test double, not of the dispatcher. The Postgres store answers the same
+//    question from a partial index. Do not quote the memory numbers as a
+//    framework throughput ceiling.
+//
+// 2. Latency is measured from enqueue, and the drain does not start until
+//    every operation has been enqueued. Where enqueue is slow relative to
+//    drain -- the Postgres run, at 9.1 s to enqueue 5k -- every percentile
+//    absorbs that head start, which compresses the gap between the priority
+//    classes. The interactive-versus-batch separation should be read from a
+//    run whose enqueue phase is negligible: at 50k in memory it is 781 ms
+//    against 12,388 ms, a factor of ~16 under a full batch flood.
+//
+// Lane serialization violations were zero in every run, on both stores. That
+// assertion is unaffected by either caveat: it comes from the connector call
+// logs, not from timing.
+// ---------------------------------------------------------------------------
+
 import { performance } from "node:perf_hooks";
 import { MemoryOperationStore } from "../harness/MemoryOperationStore.js";
 import { OperationStore, type OperationStoreApi } from "../../src/ops/OperationStore.js";
