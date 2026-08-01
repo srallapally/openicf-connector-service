@@ -34,6 +34,9 @@ Severity describes consequence, not effort.
 | ID | Sev | Status | Component | Title |
 |---|---|---|---|---|
 | [BUG-1](#bug-1) | medium | OPEN | `ops/Dispatcher` | Create read-back sleeps inline, holding the lease and mutation slot |
+| [BUG-2](#bug-2) | high | OPEN | `ops/*` | Rows left `RUNNING` by a dead dispatcher are never recovered |
+| [BUG-3](#bug-3) | medium | OPEN | `ops/*` | Delta updates cannot be enqueued; the `idempotentDelta` gate guards an unreachable path |
+| [RFE-1](#rfe-1) | low | OPEN | `config/runtime` | Interactive slice floor reserves a slot even at fraction 0 |
 
 ---
 
@@ -112,3 +115,213 @@ model does not have.
 
 Deliberately not fixed on report. The right shape touches the store contract and
 the status model, so it warrants its own phase rather than a patch.
+
+---
+
+<a id="bug-2"></a>
+## BUG-2 — Rows left `RUNNING` by a dead dispatcher are never recovered
+
+| | |
+|---|---|
+| **Severity** | high |
+| **Status** | OPEN |
+| **Component** | `packages/core/src/ops/` (`Dispatcher`, `OperationStore`, `schema.sql`) |
+| **Reported** | 2026-08-01 |
+| **Affects** | `main@491d2ac` (Phase 7 onward) |
+
+### Symptom
+
+`claimBatch` sets `status = 'RUNNING'` and stamps `claimed_at`. Nothing ever
+reads `claimed_at` again — it is written on claim and nulled on requeue, and no
+query anywhere selects on it. There is no reaper.
+
+A dispatcher that dies between claiming a row and finalizing it — SIGKILL, OOM,
+pod eviction, node loss — leaves that row `RUNNING` permanently. The other
+replica cannot take it: the claim query selects `status = 'PENDING'`, so the row
+is invisible to every future cycle.
+
+`Dispatcher.ts`'s own header comment asserts that "a dispatcher that dies
+mid-cycle loses only the rows it had claimed." That is true, and it is the
+problem: those rows are lost with no mechanism to find them again.
+
+### Impact
+
+Three consequences, worsening in that order.
+
+1. **The operation never resolves.** A caller polling `getStatus` sees `RUNNING`
+   forever. There is no timeout on the caller's side either, because the
+   framework's whole contract is that an operation reaches a terminal state.
+
+2. **The lane is not blocked, but the object is in limbo.** The lane exclusion
+   is in-memory (`activeLanes`), so it dies with the process. A subsequent
+   operation on the same object can proceed while the abandoned row still claims
+   to be running — the durable record and reality disagree.
+
+3. **Retention stops working.** `drop_operations_partition` refuses any
+   partition holding a non-terminal row, which is correct and deliberate. One
+   abandoned row pins its day's partition open indefinitely. The 24h window
+   silently becomes unbounded, and because the gate returns `false` rather than
+   raising, the failure is quiet — a `NOTICE` in a log nobody reads.
+
+Consequence 3 is what makes this `high` rather than `medium`: a single crash
+during a busy hour eventually turns into a storage problem, and the mechanism
+designed to make retention safe is exactly what converts it into a leak.
+
+### Proposed fix
+
+A reaper that returns rows whose `claimed_at` is older than a threshold to
+`PENDING`. The threshold must exceed the largest possible attempt — the
+instance's `attemptDeadlineMs` ceiling plus the read-back delay — or it will
+reclaim work that is still legitimately running, and two dispatchers will
+execute the same mutation concurrently. That is a worse bug than this one, so
+the threshold wants to be generous and configurable rather than clever.
+
+Recovery is a requeue, so the resolution protocol already covers what happens
+next: a reclaimed create is not blind-retried, it goes through the read-back
+path, which is the correct treatment for an attempt whose outcome is unknown.
+
+Note the interaction with BUG-1: a fix there that introduces an "awaiting
+read-back" state must make those rows reapable too, or it adds a second way to
+strand an operation.
+
+### Notes
+
+Never specified. Not in `CLAUDE_CODE_PLAN.md`, not in CP-1 or CP-2, so it was
+not implemented and not omitted in error — it is a gap in the design, surfaced
+during implementation review and recorded in CP-3 OPEN.
+
+---
+
+<a id="bug-3"></a>
+## BUG-3 — Delta updates cannot be enqueued; the `idempotentDelta` gate guards an unreachable path
+
+| | |
+|---|---|
+| **Severity** | medium |
+| **Status** | OPEN |
+| **Component** | `packages/core/src/ops/` (`schema.sql`, `Dispatcher`) |
+| **Reported** | 2026-08-01 |
+| **Affects** | `main@491d2ac` (Phase 7 onward) |
+
+### Symptom
+
+CP-1 LOCKs: *"resolution/update: retry (replace idempotent); delta ops retry
+only if manifest declares idempotent-delta."* Only the second half of that is
+implemented, and it guards a path that cannot be reached.
+
+- `op_type` is constrained to `CREATE`, `UPDATE`, `DELETE`. There is no
+  representation for a delta operation.
+- `attemptUpdate` always calls `facade.update()`, which is replace semantics.
+- `facade.addAttributeValues` and `facade.removeAttributeValues` exist and are
+  wired to the breaker and the deadline, but the dispatcher never calls either.
+  They are unreachable from the async path.
+- `isDeltaUpdate` reads `attrs.__DELTA__`, and that flag changes **only whether
+  the operation is retried**. It does not change what is executed.
+
+So an operation marked `__DELTA__: true` is executed as a full replace and then
+declines to retry itself on the grounds that it might be a delta.
+
+### Impact
+
+No wrong outcome today, which is why this is `medium` and not `high`: a delta
+cannot be enqueued at all, so nothing is being corrupted. What exists is a
+safety gate wired to an operation the system cannot perform.
+
+The risks are forward-looking and both are quiet:
+
+1. **The gate reads as satisfied.** Anyone auditing against CP-1 finds
+   `idempotentDelta` honoured in code and concludes deltas are handled. They are
+   not — they are absent.
+2. **`__DELTA__` is a marker this implementation invented.** It appears in the
+   README, but no checkpoint decided it. A caller that sets it expecting delta
+   semantics gets a replace, which for entitlement attributes means the
+   difference between "add this group" and "these are now the only groups" —
+   silent, and a plausible way to strip a user's access.
+
+### Proposed fix
+
+Decide first, then implement — this needs a checkpoint entry, not just a patch.
+The shape of the decision:
+
+- **Represent deltas properly**: extend `op_type` to include something like
+  `ADD_VALUES` / `REMOVE_VALUES`, dispatch them to the corresponding facade
+  methods, and let `idempotentDelta` gate retry for exactly those. This makes
+  the CP-1 item true, and retires `__DELTA__`.
+- **Or declare deltas out of scope** for the async path, remove `isDeltaUpdate`
+  and the `__DELTA__` marker, drop the `idempotentDelta` manifest flag, and
+  record the exclusion. Callers needing deltas would read-modify-write through a
+  replace, which is idempotent and already supported.
+
+Either is defensible. What should not persist is the current state, where the
+flag implies a capability that does not exist.
+
+Until it is resolved, `__DELTA__: true` is worth documenting as
+"retry-suppression hint" rather than "delta operation", which is what it
+actually does.
+
+### Notes
+
+Surfaced while filing RFE-1; recorded in CP-3 OPEN as "`__DELTA__` marker
+unratified", which understated it. The marker is not merely unratified — the
+operation it names cannot be enqueued.
+
+---
+
+<a id="rfe-1"></a>
+## RFE-1 — Interactive slice floor reserves a slot even at fraction 0
+
+| | |
+|---|---|
+| **Severity** | low |
+| **Status** | OPEN — needs a decision, not a fix |
+| **Component** | `packages/core/src/config/runtime.ts` (`computeInteractiveSlots`) |
+| **Reported** | 2026-08-01 |
+| **Affects** | `main@491d2ac` (Phase 3 onward) |
+
+### Symptom
+
+`computeInteractiveSlots` implements the CP-2 rule literally:
+
+```
+budget <= 1        -> 0 slots
+otherwise          -> min(budget, max(1, ceil(budget * fraction)))
+```
+
+Because `ceil()` already returns at least 1 for any positive fraction, the
+`max(1, ...)` floor changes the result in exactly one case: `fraction === 0`.
+An operator who sets `interactiveSliceFraction: 0` to mean "no reservation"
+gets one reserved slot anyway, on any instance with a mutation budget of 2 or
+more.
+
+### Impact
+
+Small and bounded — one slot out of the instance's mutation budget. It matters
+only where the budget is small enough for one slot to be a large fraction of it,
+and where the operator deliberately wanted batch work to have everything.
+
+The real cost is that a documented, in-range configuration value silently does
+not do what it says. `0` is accepted by validation, is inside the documented
+`0..1` range, and is then ignored.
+
+### The decision
+
+CP-2 says *"min 1 slot at budget ≥2"* without qualification, so the current
+behaviour is the faithful reading, and the floor arguably encodes a real intent:
+interactive work should never be starvable while lanes are contended.
+
+Two coherent resolutions:
+
+1. **Keep the floor, reject the input.** If the reservation is genuinely
+   non-negotiable, `interactiveSliceFraction: 0` is a contradiction and should
+   fail validation with a message saying so, rather than being accepted and
+   overridden.
+2. **Honour 0 as opt-out.** Treat `0` as "no reserved slice" and keep the floor
+   for every positive fraction, which is where it was aimed anyway — stopping a
+   small fraction against a small budget from rounding down to nothing.
+
+Option 2 is the smaller surprise and matches what an operator typing `0` means.
+Option 1 is more defensible if the reservation is a safety property rather than
+a tuning knob. Either way, a value should not be accepted and then disregarded.
+
+Whichever is chosen wants a CP entry, since it either amends or confirms a CP-2
+line.
