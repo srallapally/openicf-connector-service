@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { makeFakeConnector, FakeTarget } from "./FakeConnector.js";
-import { isConnectorError } from "../../src/spi/errors.js";
-import type { ResultsHandler } from "../../src/spi/icf-compat.js";
+import { makeFakeConnector, FakeTarget } from "../src/testing/FakeConnector.js";
+import { isConnectorError } from "../src/spi/errors.js";
+import type { ResultsHandler } from "../src/spi/icf-compat.js";
 
 afterEach(() => { vi.useRealTimers(); });
 

@@ -67,31 +67,20 @@ export interface OperationOptions {
   priority?: OperationPriority | undefined;
 }
 
-/**
- * Terminal outcome of an async mutation, recorded on the operation row.
+/*
+ * OperationOutcome, OperationPendingStatus, and OperationStatus moved to the
+ * provisioning service at CP-5.
  *
- * The three failure states carry different retry contracts and MUST NOT
- * be collapsed:
- * - REJECTED_PRE_DISPATCH: never reached the connector (admission cap,
- *   breaker open, invalid config). Blind retry is safe.
- * - FAILED_CONFIRMED: the target confirmed rejection. Retry per error class.
- * - INDETERMINATE: the deadline expired after dispatch. The target may have
- *   applied the change. Resolve by read-back or reconciliation before any
- *   retry.
+ * They describe the lifecycle of a durable operation row, which only the claim
+ * loop has. The facade executes one operation and either returns or throws; it
+ * never reaches a terminal *status*. Keeping the taxonomy here would have made
+ * the framework's type surface imply a queue it does not own.
+ *
+ * OperationOptions keeps abortSignal, deadlineEpochMs, and priority. The ICF
+ * options bag is extensible by design, the facade enforces the deadline for
+ * any caller, and priority is a hint a caller may set whether or not anything
+ * schedules on it.
  */
-export type OperationOutcome =
-    | "SUCCEEDED"
-    | "REJECTED_PRE_DISPATCH"
-    | "FAILED_CONFIRMED"
-    | "INDETERMINATE";
-
-/**
- * Lifecycle status of a durable operation row: the two non-terminal states
- * plus every {@link OperationOutcome}. A row is terminal exactly when its
- * status is an OperationOutcome, which is the condition the partition drop
- * gate and the finalize guard both test.
- */
-export type OperationStatus = "PENDING" | "RUNNING" | OperationOutcome;
 
 // ---------- Schema types ----------
 export type AttrType =

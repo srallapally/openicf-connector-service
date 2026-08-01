@@ -9,8 +9,8 @@
 // cases are exactly the ones where the target's state and the framework's
 // belief about it have diverged.
 
-import { ConnectorError } from "../../src/spi/errors.js";
-import type { ConnectorErrorCode } from "../../src/spi/errors.js";
+import { ConnectorError } from "../spi/errors.js";
+import type { ConnectorErrorCode } from "../spi/errors.js";
 import type {
   AttributeValue,
   ConnectorObject,
@@ -18,8 +18,8 @@ import type {
   OperationOptions,
   Schema,
   SyncToken,
-} from "../../src/spi/types.js";
-import type { ResultsHandler, SearchResult } from "../../src/spi/icf-compat.js";
+} from "../spi/types.js";
+import type { ResultsHandler, SearchResult } from "../spi/icf-compat.js";
 
 export const DEFAULT_NAME_ATTRIBUTE = "__NAME__";
 export const DEFAULT_OBJECT_CLASS = "__ACCOUNT__";
@@ -77,6 +77,41 @@ export class FakeTarget {
     this.accounts.set(uid, { ...existing, ...attrs });
   }
 
+  /**
+   * Append values to a multi-valued attribute.
+   *
+   * `dedup` is what makes the operation idempotent. With it, applying the same
+   * grant twice is indistinguishable from applying it once -- set semantics.
+   * Without it, every replay appends again, which is exactly the corruption
+   * the manifest's `idempotentDelta` flag exists to gate.
+   */
+  addValues(uid: string, attrs: Record<string, AttributeValue>, dedup = true): void {
+    const existing = this.accounts.get(uid);
+    if (!existing) throw new ConnectorError("UNKNOWN_UID", `no such uid ${uid}`);
+
+    for (const [key, value] of Object.entries(attrs)) {
+      const incoming = Array.isArray(value) ? value : [value];
+      const current = existing[key];
+      const currentArr = current === undefined ? [] : (Array.isArray(current) ? current : [current]);
+      const merged = [...(currentArr as unknown[]), ...(incoming as unknown[])];
+      existing[key] = (dedup ? Array.from(new Set(merged)) : merged) as AttributeValue;
+    }
+  }
+
+  /** Remove values from a multi-valued attribute. Idempotent by construction. */
+  removeValues(uid: string, attrs: Record<string, AttributeValue>): void {
+    const existing = this.accounts.get(uid);
+    if (!existing) throw new ConnectorError("UNKNOWN_UID", `no such uid ${uid}`);
+
+    for (const [key, value] of Object.entries(attrs)) {
+      const doomed = new Set((Array.isArray(value) ? value : [value]) as unknown[]);
+      const current = existing[key];
+      if (current === undefined) continue;
+      const currentArr = (Array.isArray(current) ? current : [current]) as unknown[];
+      existing[key] = currentArr.filter(v => !doomed.has(v)) as AttributeValue;
+    }
+  }
+
   delete(uid: string): void {
     const existing = this.accounts.get(uid);
     if (!existing) throw new ConnectorError("UNKNOWN_UID", `no such uid ${uid}`);
@@ -129,8 +164,17 @@ export interface FakeConnectorOptions {
   searchStreaming?: boolean;
   /** Mirrors the manifest flag; when false, search rejects equality-by-name lookups. */
   equalitySearchOnName?: boolean;
+  /**
+   * Make `addAttributeValues` append without deduplicating.
+   *
+   * Models a target whose delta is list-valued rather than set-valued, where
+   * replaying a grant genuinely doubles it. Used to demonstrate what the
+   * `idempotentDelta` retry gate prevents.
+   */
+  nonIdempotentDelta?: boolean;
   /** Omit operations entirely, to exercise "not supported" paths. */
-  omit?: Array<"create" | "update" | "delete" | "get" | "search" | "sync" | "test" | "dispose">;
+  omit?: Array<"create" | "update" | "delete" | "get" | "search" | "sync" | "test" | "dispose"
+      | "addAttributeValues" | "removeAttributeValues">;
 }
 
 export type FakeConnector = ConnectorSpi & { readonly controls: FakeConnectorControls };
@@ -253,6 +297,22 @@ export function makeFakeConnector(opts: FakeConnectorOptions = {}): FakeConnecto
   if (!omit.has("delete")) {
     spi["delete"] = (oc: string, uid: string, options?: OperationOptions) =>
         run("delete", [oc, uid], options, () => { target.delete(uid); });
+  }
+
+  if (!omit.has("addAttributeValues")) {
+    spi["addAttributeValues"] = (oc: string, uid: string, add: Record<string, AttributeValue>, options?: OperationOptions) =>
+        run("addAttributeValues", [oc, uid, add], options, () => {
+          target.addValues(uid, add, opts.nonIdempotentDelta !== true);
+          return target.toConnectorObject(uid, oc)!;
+        });
+  }
+
+  if (!omit.has("removeAttributeValues")) {
+    spi["removeAttributeValues"] = (oc: string, uid: string, remove: Record<string, AttributeValue>, options?: OperationOptions) =>
+        run("removeAttributeValues", [oc, uid, remove], options, () => {
+          target.removeValues(uid, remove);
+          return target.toConnectorObject(uid, oc)!;
+        });
   }
 
   if (!omit.has("get")) {

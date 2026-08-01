@@ -1,7 +1,12 @@
 // src/config/runtime.ts
 //
-// Per-instance runtime tuning: attempt deadlines, concurrency budgets, the
-// interactive slice, optional target rate limits, and optional read caching.
+// Per-instance runtime tuning for connector execution: attempt deadlines,
+// concurrency budgets, and optional read caching.
+//
+// The interactive slice fraction and per-op rate limits moved to the
+// provisioning service at CP-5. Both are claim-loop concerns -- they decide
+// what to dispatch and when. Nothing the facade does to execute a single
+// operation consults either.
 //
 // Validation is hand-rolled rather than schema-driven. The core package has no
 // schema library among its dependencies, and the checks here need error
@@ -44,21 +49,11 @@ export const RUNTIME_DEFAULTS = {
   attemptDeadlineMs: 3_000,
   mutationConcurrency: 10,
   readConcurrency: 10,
-  interactiveSliceFraction: 0.2,
 } as const;
 
 // ---------- Input shapes (what an operator writes) ----------
 
 export type PerOp<T> = { [K in OpKind]?: T | undefined };
-
-export interface RateLimitInput {
-  /** Requests permitted per `requestPeriodMs`. */
-  requestLimit: number;
-  /** Window length in milliseconds. */
-  requestPeriodMs: number;
-  /** How long to wait for a token before giving up. Omit to fail fast. */
-  requestTimeoutMs?: number | undefined;
-}
 
 export interface ReadCacheInput {
   ttlMs: number;
@@ -78,36 +73,16 @@ export interface RuntimeConfigInput {
   attemptDeadlineMs?: number | PerOp<number> | undefined;
   mutationConcurrency?: number | undefined;
   readConcurrency?: number | undefined;
-  interactiveSliceFraction?: number | undefined;
-  rateLimits?: PerOp<RateLimitInput> | undefined;
   /** Opt-in `get` caching. Absent means no caching at all. */
   readCache?: ReadCacheInput | undefined;
 }
 
 // ---------- Resolved shape (what the runtime consumes) ----------
 
-export interface ResolvedRateLimit {
-  requestLimit: number;
-  requestPeriodMs: number;
-  requestTimeoutMs: number | undefined;
-}
-
 export interface ResolvedRuntimeConfig {
   readonly attemptDeadlineMs: Readonly<Record<OpKind, number>>;
   readonly mutationConcurrency: number;
   readonly readConcurrency: number;
-  readonly interactiveSliceFraction: number;
-  /**
-   * Mutation slots reserved for `interactive` work.
-   *
-   * Interactive operations may use the whole mutation budget; this is the
-   * portion that batch work may *not* touch, which is what stops a large
-   * reconciliation backlog from starving a helpdesk write.
-   */
-  readonly interactiveSlots: number;
-  /** Mutation slots available to `batch` work: budget minus the slice. */
-  readonly batchSlots: number;
-  readonly rateLimits: Readonly<Partial<Record<OpKind, ResolvedRateLimit>>>;
   readonly readCache: Readonly<ReadCacheInput> | null;
 }
 
@@ -117,8 +92,6 @@ const RUNTIME_KEYS: ReadonlySet<string> = new Set<keyof RuntimeConfigInput>([
   "attemptDeadlineMs",
   "mutationConcurrency",
   "readConcurrency",
-  "interactiveSliceFraction",
-  "rateLimits",
   "readCache",
 ]);
 
@@ -213,49 +186,6 @@ function parseAttemptDeadlines(raw: unknown): Record<OpKind, number> {
   return out;
 }
 
-function parseRateLimits(raw: unknown): Partial<Record<OpKind, ResolvedRateLimit>> {
-  const out: Partial<Record<OpKind, ResolvedRateLimit>> = {};
-  if (raw === undefined) return out;
-
-  if (!isPlainObject(raw)) {
-    throw new Error(`runtime.rateLimits must be a per-op object, got ${describe(raw)}`);
-  }
-
-  for (const key of Object.keys(raw)) {
-    if (!(OP_KINDS as readonly string[]).includes(key)) {
-      throw new Error(
-          `runtime.rateLimits.${key} is not a known operation. ` +
-          `Expected one of: ${OP_KINDS.join(", ")}.`,
-      );
-    }
-    const op = key as OpKind;
-    const entry = raw[op];
-    if (entry === undefined) continue;
-    if (!isPlainObject(entry)) {
-      throw new Error(`runtime.rateLimits.${op} must be an object, got ${describe(entry)}`);
-    }
-
-    for (const field of Object.keys(entry)) {
-      if (!["requestLimit", "requestPeriodMs", "requestTimeoutMs"].includes(field)) {
-        throw new Error(
-            `runtime.rateLimits.${op}.${field} is not a recognised setting. ` +
-            `Expected requestLimit, requestPeriodMs, or requestTimeoutMs.`,
-        );
-      }
-    }
-
-    const requestTimeoutMs = entry["requestTimeoutMs"];
-    out[op] = {
-      requestLimit: requirePositiveInteger(entry["requestLimit"], `runtime.rateLimits.${op}.requestLimit`),
-      requestPeriodMs: requirePositiveInteger(entry["requestPeriodMs"], `runtime.rateLimits.${op}.requestPeriodMs`),
-      requestTimeoutMs: requestTimeoutMs === undefined
-          ? undefined
-          : requirePositiveInteger(requestTimeoutMs, `runtime.rateLimits.${op}.requestTimeoutMs`),
-    };
-  }
-  return out;
-}
-
 function parseReadCache(raw: unknown): ReadCacheInput | null {
   if (raw === undefined) return null;
   if (!isPlainObject(raw)) {
@@ -274,35 +204,6 @@ function parseReadCache(raw: unknown): ReadCacheInput | null {
   };
 }
 
-function parseSliceFraction(raw: unknown): number {
-  if (raw === undefined) return RUNTIME_DEFAULTS.interactiveSliceFraction;
-  if (typeof raw !== "number" || !Number.isFinite(raw)) {
-    throw new Error(`runtime.interactiveSliceFraction must be a number, got ${describe(raw)}`);
-  }
-  if (raw < 0 || raw > 1) {
-    throw new Error(`runtime.interactiveSliceFraction must be between 0 and 1 inclusive, got ${raw}`);
-  }
-  return raw;
-}
-
-/**
- * Size the reserved interactive slice.
- *
- * `ceil` so a small fraction against a small budget still reserves a whole
- * slot rather than rounding to nothing -- 0.2 of a budget of 3 is 0.6, and
- * flooring it would leave interactive work with no reservation at all on
- * exactly the instances where contention hurts most.
- *
- * At a budget of 1 there is nothing to divide: the single slot stays shared,
- * and interactive work still wins it whenever it is free, because interactive
- * may draw from the whole budget. Above that the slice is at least one slot,
- * even at fraction 0, so the reservation cannot be configured out of existence
- * while lanes remain contended.
- */
-function computeInteractiveSlots(mutationConcurrency: number, fraction: number): number {
-  if (mutationConcurrency <= 1) return 0;
-  return Math.min(mutationConcurrency, Math.max(1, Math.ceil(mutationConcurrency * fraction)));
-}
 
 // ---------- Entry point ----------
 
@@ -339,17 +240,10 @@ export function resolveRuntimeConfig(raw?: RuntimeConfigInput | undefined): Reso
       ? RUNTIME_DEFAULTS.readConcurrency
       : requirePositiveInteger(source["readConcurrency"], "runtime.readConcurrency");
 
-  const interactiveSliceFraction = parseSliceFraction(source["interactiveSliceFraction"]);
-  const interactiveSlots = computeInteractiveSlots(mutationConcurrency, interactiveSliceFraction);
-
   return {
     attemptDeadlineMs: parseAttemptDeadlines(source["attemptDeadlineMs"]),
     mutationConcurrency,
     readConcurrency,
-    interactiveSliceFraction,
-    interactiveSlots,
-    batchSlots: mutationConcurrency - interactiveSlots,
-    rateLimits: parseRateLimits(source["rateLimits"]),
     readCache: parseReadCache(source["readCache"]),
   };
 }

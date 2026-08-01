@@ -2,11 +2,54 @@ openapi: 3.1.0
 info:
   title: ICF-Inspired Connector Service
   version: 1.1.0
+security:
+  - bearerAuth: []
+
+# The framework supplies the async provisioning machinery, not an HTTP surface:
+# no paths are defined here. These schemas exist so a service that does expose
+# one describes the same vocabulary the operation table enforces.
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
-security:
-  - bearerAuth: []
+  schemas:
+    OperationType:
+      type: string
+      description: >-
+        Mutation kinds the operation table accepts. Reads are synchronous and
+        are never enqueued. ADD_VALUES and REMOVE_VALUES are deltas against a
+        multi-valued attribute and require a uid; UPDATE is always a full
+        replace.
+      enum: [CREATE, UPDATE, DELETE, ADD_VALUES, REMOVE_VALUES]
+
+    OperationPriority:
+      type: string
+      description: >-
+        Scheduling class, supplied by the caller and never inferred from the
+        request shape. Defaults to batch.
+      enum: [interactive, batch]
+
+    OperationStatus:
+      type: string
+      description: >-
+        Lifecycle status. PENDING, RUNNING, and AWAITING_READBACK are
+        non-terminal; the remaining four are the terminal outcomes.
+      enum:
+        - PENDING
+        - RUNNING
+        - AWAITING_READBACK
+        - SUCCEEDED
+        - REJECTED_PRE_DISPATCH
+        - FAILED_CONFIRMED
+        - INDETERMINATE
+
+    OperationOutcome:
+      type: string
+      description: >-
+        Terminal result. The three failures are deliberately distinct because
+        the remedy differs: REJECTED_PRE_DISPATCH never reached the target and
+        is safe to retry wholesale, FAILED_CONFIRMED will refuse again, and
+        INDETERMINATE can only be settled by reconciliation.
+      enum: [SUCCEEDED, REJECTED_PRE_DISPATCH, FAILED_CONFIRMED, INDETERMINATE]
