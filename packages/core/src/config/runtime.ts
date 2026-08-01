@@ -295,12 +295,18 @@ function parseSliceFraction(raw: unknown): number {
  *
  * At a budget of 1 there is nothing to divide: the single slot stays shared,
  * and interactive work still wins it whenever it is free, because interactive
- * may draw from the whole budget. Above that the slice is at least one slot,
- * even at fraction 0, so the reservation cannot be configured out of existence
- * while lanes remain contended.
+ * may draw from the whole budget.
+ *
+ * A fraction of exactly 0 means no reservation. The floor exists to stop a
+ * small positive fraction from rounding down to nothing, not to override an
+ * operator who asked for zero -- and since `ceil` already returns at least 1
+ * for every positive fraction, 0 was the only input the floor ever changed.
+ * Accepting a documented, in-range value and then ignoring it is the surprise
+ * worth removing (RFE-1, amended at CP-4).
  */
 function computeInteractiveSlots(mutationConcurrency: number, fraction: number): number {
   if (mutationConcurrency <= 1) return 0;
+  if (fraction <= 0) return 0;
   return Math.min(mutationConcurrency, Math.max(1, Math.ceil(mutationConcurrency * fraction)));
 }
 

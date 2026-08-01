@@ -137,11 +137,20 @@ describe("resolveRuntimeConfig — interactive slice floor rule", () => {
         expect(resolveRuntimeConfig({ mutationConcurrency: 6, interactiveSliceFraction: 0.5 }).interactiveSlots).toBe(3);
     });
 
-    it("still reserves one slot at fraction 0 once the budget is 2 or more", () => {
-        // The floor is unconditional above a budget of 1: the reservation
-        // cannot be configured out of existence while lanes are contended.
-        expect(resolveRuntimeConfig({ mutationConcurrency: 8, interactiveSliceFraction: 0 }).interactiveSlots).toBe(1);
+    it("treats fraction 0 as an explicit opt-out (RFE-1)", () => {
+        // The floor exists to stop a small positive fraction rounding down to
+        // nothing, not to override an operator who asked for none. Accepting a
+        // documented, in-range value and then ignoring it was the surprise.
+        expect(resolveRuntimeConfig({ mutationConcurrency: 8, interactiveSliceFraction: 0 }).interactiveSlots).toBe(0);
+        expect(resolveRuntimeConfig({ mutationConcurrency: 8, interactiveSliceFraction: 0 }).batchSlots).toBe(8);
         expect(resolveRuntimeConfig({ mutationConcurrency: 1, interactiveSliceFraction: 0 }).interactiveSlots).toBe(0);
+    });
+
+    it("still floors every positive fraction at one slot", () => {
+        // 0.01 of a budget of 2 is 0.02; without the floor that rounds to
+        // nothing on exactly the instances where contention bites hardest.
+        expect(resolveRuntimeConfig({ mutationConcurrency: 2, interactiveSliceFraction: 0.01 }).interactiveSlots).toBe(1);
+        expect(resolveRuntimeConfig({ mutationConcurrency: 20, interactiveSliceFraction: 0.001 }).interactiveSlots).toBe(1);
     });
 
     it("never reserves more than the whole budget", () => {

@@ -86,12 +86,23 @@ export type OperationOutcome =
     | "INDETERMINATE";
 
 /**
- * Lifecycle status of a durable operation row: the two non-terminal states
- * plus every {@link OperationOutcome}. A row is terminal exactly when its
- * status is an OperationOutcome, which is the condition the partition drop
- * gate and the finalize guard both test.
+ * Non-terminal lifecycle states of a durable operation row.
+ *
+ * `AWAITING_READBACK` is a create whose attempt deadline expired and which is
+ * waiting out the delay before its read-back. It holds no mutation slot, no
+ * connector lease, and no claim -- only its lane, which it must keep, since a
+ * second create on the same name cannot run while this one's outcome is
+ * unknown.
  */
-export type OperationStatus = "PENDING" | "RUNNING" | OperationOutcome;
+export type OperationPendingStatus = "PENDING" | "RUNNING" | "AWAITING_READBACK";
+
+/**
+ * Lifecycle status of a durable operation row: the non-terminal states plus
+ * every {@link OperationOutcome}. A row is terminal exactly when its status is
+ * an OperationOutcome, which is the condition the partition drop gate and the
+ * finalize guard both test.
+ */
+export type OperationStatus = OperationPendingStatus | OperationOutcome;
 
 // ---------- Schema types ----------
 export type AttrType =

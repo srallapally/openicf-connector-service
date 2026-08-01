@@ -99,8 +99,12 @@ accounts.
 | `FAILED_CONFIRMED` | The target answered and refused. | Retrying the same payload reproduces the refusal. Fix the request. |
 | `INDETERMINATE` | The attempt deadline expired with no answer. The target may or may not have applied it. | Reconciliation. **Do not blind-retry.** |
 
-Non-terminal statuses are `PENDING` and `RUNNING`. A row is terminal exactly
-when its status is one of the four above.
+Non-terminal statuses are `PENDING`, `RUNNING`, and `AWAITING_READBACK` — a
+create whose deadline expired and which is waiting out the delay before its
+read-back. A deferred row holds no mutation slot and no connector lease, only
+its lane. A row is terminal exactly when its status is one of the four above,
+and the database derives that rather than enumerating it, so adding a status
+cannot silently miss the partition-drop gate.
 
 ### Resolution protocol
 
@@ -113,12 +117,17 @@ when its status is one of the four above.
   `INDETERMINATE`, because replaying an increment or an append corrupts the
   target silently.
 - **CREATE** — success persists the minted `uid` and the returned object. A
-  deadline triggers a **read-back**: after the attempt deadline plus a grace
-  period, the framework searches by the naming attribute. Found resolves
-  `SUCCEEDED` with the discovered `uid`; a confirmed miss retries exactly once;
-  a connector without `equalitySearchOnName` records `INDETERMINATE`
-  immediately and leaves it to reconciliation. `ALREADY_EXISTS` is
-  `FAILED_CONFIRMED`.
+  deadline parks the operation as `AWAITING_READBACK` until the attempt
+  deadline plus a grace period has passed, then searches by the naming
+  attribute. Found resolves `SUCCEEDED` with the discovered `uid`; a confirmed
+  miss retries exactly once; a connector without `equalitySearchOnName` records
+  `INDETERMINATE` immediately and leaves it to reconciliation. `ALREADY_EXISTS`
+  is `FAILED_CONFIRMED`.
+
+  The wait is a deferral, not a sleep: the operation gives up its slot and
+  lease and is reclaimed when due. A resumed row searches and never re-issues
+  the create, which is what keeps a slow target from converting its own
+  timeouts into lost throughput.
 
 ### Lanes
 
@@ -155,7 +164,7 @@ Per-instance, under a `runtime` block on the instance definition. Separate from
 | `attemptDeadlineMs` | `3000` | 1–120000, per-op or a single value. `-1` and `0` are rejected at validation |
 | `mutationConcurrency` | `10` | ≥ 1 |
 | `readConcurrency` | `10` | ≥ 1 |
-| `interactiveSliceFraction` | `0.2` | 0–1; `ceil()`, at least 1 slot once the budget is ≥ 2, none at 1 |
+| `interactiveSliceFraction` | `0.2` | 0–1; `ceil()`, at least 1 slot for any positive fraction once the budget is ≥ 2. `0` means no reservation |
 | `rateLimits` | off | optional per op: `{ requestLimit, requestPeriodMs, requestTimeoutMs? }` |
 | `readCache` | off | optional `{ ttlMs, max }`; `get` only, TTL expiry, no write invalidation |
 
@@ -179,6 +188,23 @@ write latency.
 Reads are **not** cached unless `readCache` is set. The previous default cost a
 measured 2.45ms invalidation scan on every write, allocated per facade whether
 or not anything was cached, and could not be correct across replicas.
+
+### Crash recovery
+
+A dispatcher killed mid-attempt leaves its claimed rows `RUNNING`, where no
+claim query would ever find them again. A reaper returns any row claimed longer
+ago than `reaperThresholdMs` (default 10 minutes) to the backlog.
+
+Routing follows the same reasoning as the resolution protocol: an abandoned
+create's outcome is unknown, so it goes to the read-back path rather than being
+re-issued; update and delete are idempotent and return straight to `PENDING`.
+Neither charges the operation an attempt — the process died, which is not the
+operation's fault.
+
+The threshold **must exceed** the instance's deadline ceiling plus the
+read-back grace. Reclaiming work that is still running puts two dispatchers on
+one mutation, which is worse than the stranded row it would be fixing.
+Concurrent replicas serialize on an advisory lock, so a pass is done once.
 
 ### Operation table and retention
 

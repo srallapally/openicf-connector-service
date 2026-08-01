@@ -45,6 +45,10 @@ export const METRICS = {
   OUTCOME: "gcf.operations.outcome",
   /** Requeues, labelled by reason. */
   REQUEUED: "gcf.operations.requeued",
+  /** Creates parked to await a read-back rather than holding a slot. */
+  DEFERRED_READBACK: "gcf.operations.deferred_readback",
+  /** Rows recovered from a dead dispatcher, labelled by the route taken. */
+  REAPED: "gcf.operations.reaped",
   /** End-to-end attempt latency per instance, in ms. */
   ATTEMPT_LATENCY_MS: "gcf.operations.attempt_latency_ms",
   /** Circuit breaker state transitions. */

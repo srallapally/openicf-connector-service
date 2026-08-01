@@ -26,6 +26,7 @@ interface SetupOpts {
     capabilities?: { idempotentDelta?: boolean; equalitySearchOnName?: boolean };
     connectorOpts?: Parameters<typeof makeFakeConnector>[0];
     instanceId?: string;
+    dispatcherConfig?: Record<string, unknown>;
 }
 
 function setup(opts: SetupOpts = {}): void {
@@ -51,6 +52,7 @@ function setup(opts: SetupOpts = {}): void {
             backoffMaxMs: 20,
             readBackGraceMs: 5,
             logger: { error: () => {} },
+            ...(opts.dispatcherConfig ?? {}),
         },
     });
 }
@@ -86,7 +88,8 @@ async function drain(timeoutMs = 5_000): Promise<void> {
         await dispatcher.runCycle();
         await new Promise(r => setTimeout(r, 2));
 
-        const open = store.allRows().some(r => r.status === "PENDING" || r.status === "RUNNING");
+        const open = store.allRows().some(r =>
+            r.status === "PENDING" || r.status === "RUNNING" || r.status === "AWAITING_READBACK");
         if (!open && dispatcher.inFlightCount === 0) return;
     }
     throw new Error(
@@ -550,5 +553,185 @@ describe("lifecycle", () => {
         // The second observed a cycle already running and did nothing.
         expect(Math.min(a, b)).toBe(0);
         await drain();
+    });
+});
+
+describe("read-back deferral (BUG-1)", () => {
+    it("releases the mutation slot while the read-back wait runs", async () => {
+        // The defect: the wait used to be an inline sleep holding the slot, so
+        // a degraded target converted its own timeouts into reduced drain --
+        // worst exactly when it was already worst.
+        // A long read-back grace keeps the parked window open for the whole
+        // assertion, so this measures behaviour rather than a race.
+        setup({
+            runtime: { attemptDeadlineMs: 20, mutationConcurrency: 1 },
+            dispatcherConfig: { readBackGraceMs: 5_000 },
+        });
+        connector.controls.applyThenHang();
+
+        await enqueue({ idempotencyKey: "slot-1", nameAttrValue: "held", attrs: { __NAME__: "held" } });
+        await enqueue({ idempotencyKey: "slot-2", nameAttrValue: "other", attrs: { __NAME__: "other" } });
+
+        // First cycle claims op 1 (budget of 1); it times out and defers.
+        await dispatcher.runCycle();
+        await new Promise(r => setTimeout(r, 80));
+
+        const parked = store.allRows().find(r => r.status === "AWAITING_READBACK");
+        expect(parked, "the timed-out create should be parked").toBeDefined();
+
+        // The single slot is free again, so the unrelated op can run even
+        // though the first one has not resolved.
+        await dispatcher.runCycle();
+        await new Promise(r => setTimeout(r, 40));
+        expect(connector.controls.target.findByName("other")).toBeDefined();
+    });
+
+    it("keeps the lane blocked while the wait runs", async () => {
+        setup({
+            runtime: { attemptDeadlineMs: 20, mutationConcurrency: 4 },
+            dispatcherConfig: { readBackGraceMs: 5_000 },
+        });
+        connector.controls.applyThenHang();
+
+        // Same naming attribute, so the same lane.
+        await enqueue({ idempotencyKey: "lane-1", nameAttrValue: "dup", attrs: { __NAME__: "dup" } });
+        await dispatcher.runCycle();
+        await new Promise(r => setTimeout(r, 80));
+
+        await enqueue({ idempotencyKey: "lane-2", nameAttrValue: "dup", attrs: { __NAME__: "dup" } });
+
+        // The second create must not run while the first one's outcome is
+        // unknown, or the read-back would be racing a duplicate.
+        const claimed = await dispatcher.runCycle();
+        expect(claimed).toBe(0);
+    });
+
+    it("does not spend the retry budget on the wait", async () => {
+        setup({ runtime: { attemptDeadlineMs: 20 } });
+        connector.controls.applyThenHang();
+
+        const { id } = await enqueue({ idempotencyKey: "budget", nameAttrValue: "b", attrs: { __NAME__: "b" } });
+        await drain();
+
+        const row = await store.getStatus(id);
+        expect(row!.status).toBe("SUCCEEDED");
+        // Deferral is not an attempt; counting it would have consumed the one
+        // retry the read-back path allows before the read-back ever ran.
+        expect(row!.attemptCount).toBe(0);
+    });
+
+    it("resumes by searching, never by re-issuing the create", async () => {
+        setup({ runtime: { attemptDeadlineMs: 20 } });
+        connector.controls.applyThenHang();
+
+        const { id } = await enqueue({ idempotencyKey: "resume", nameAttrValue: "once", attrs: { __NAME__: "once" } });
+        await drain();
+
+        expect((await store.getStatus(id))!.status).toBe("SUCCEEDED");
+        // One create attempt total, then a search. A second create here is the
+        // duplicate account the whole mechanism exists to prevent.
+        expect(connector.controls.countOf("create")).toBe(1);
+        expect(connector.controls.countOf("search")).toBe(1);
+        expect(connector.controls.target.size).toBe(1);
+    });
+});
+
+describe("reaper (BUG-2)", () => {
+    /** Simulate a dispatcher that claimed rows and then died. */
+    function orphan(): void {
+        for (const row of store.allRows()) {
+            if (row.status === "RUNNING") (row as any).claimedAt = new Date(Date.now() - 3_600_000);
+        }
+    }
+
+    it("returns an abandoned delete to the backlog and completes it", async () => {
+        setup({ runtime: { attemptDeadlineMs: 50 } });
+        const created = await connector.create!(OC, { __NAME__: "orphaned" });
+
+        const { id } = await enqueue({ idempotencyKey: "reap-d", opType: "DELETE", uid: created.uid });
+
+        // Claim it, then strand it as a dead replica would.
+        await store.claimBatch(10, [], new Map([["ad-prod", 5]]));
+        orphan();
+
+        dispatcher = new Dispatcher({
+            store, manager, registry,
+            config: { reaperThresholdMs: 1, reaperIntervalMs: 0, logger: { error: () => {} } },
+        });
+
+        await drain();
+
+        expect((await store.getStatus(id))!.status).toBe("SUCCEEDED");
+        expect(connector.controls.target.size).toBe(0);
+    });
+
+    it("sends an abandoned create to read-back rather than re-issuing it", async () => {
+        setup({ runtime: { attemptDeadlineMs: 50 } });
+        // The target applied the create before the dispatcher died.
+        await connector.create!(OC, { __NAME__: "half" });
+        const createsBefore = connector.controls.countOf("create");
+
+        const { id } = await enqueue({ idempotencyKey: "reap-c", nameAttrValue: "half", attrs: { __NAME__: "half" } });
+        await store.claimBatch(10, [], new Map([["ad-prod", 5]]));
+        orphan();
+
+        dispatcher = new Dispatcher({
+            store, manager, registry,
+            config: { reaperThresholdMs: 1, reaperIntervalMs: 0, readBackGraceMs: 5, logger: { error: () => {} } },
+        });
+
+        await drain();
+
+        const row = await store.getStatus(id);
+        expect(row!.status).toBe("SUCCEEDED");
+        expect((row!.result as any).viaReadBack).toBe(true);
+        // Blind retry here is exactly how a duplicate account happens.
+        expect(connector.controls.target.size).toBe(1);
+        expect(connector.controls.countOf("create")).toBe(createsBefore);   // dispatcher issued none
+    });
+
+    it("leaves a live attempt alone", async () => {
+        setup();
+        await enqueue({ idempotencyKey: "live", nameAttrValue: "l", attrs: { __NAME__: "l" } });
+        await store.claimBatch(10, [], new Map([["ad-prod", 5]]));
+
+        // Freshly claimed: reclaiming it would put two dispatchers on one
+        // mutation, which is worse than the stranded row it would be fixing.
+        const reaped = await store.reapStale(600_000, 5_000);
+        expect(reaped).toEqual({ deferredForReadback: 0, requeued: 0 });
+    });
+
+    it("does not disturb a row waiting out its read-back", async () => {
+        setup({ runtime: { attemptDeadlineMs: 20 } });
+        connector.controls.applyThenHang();
+
+        await enqueue({ idempotencyKey: "wait", nameAttrValue: "w", attrs: { __NAME__: "w" } });
+        await dispatcher.runCycle();
+        await new Promise(r => setTimeout(r, 40));
+
+        const parked = store.allRows().find(r => r.status === "AWAITING_READBACK");
+        expect(parked).toBeDefined();
+
+        // It looks abandoned by wall-clock age, but reclaiming it mid-wait
+        // would re-issue the create the deferral exists to avoid.
+        const reaped = await store.reapStale(0, 5_000);
+        expect(reaped).toEqual({ deferredForReadback: 0, requeued: 0 });
+
+        await drain();
+    });
+});
+
+describe("delta op types are admitted but not yet dispatched", () => {
+    it("refuses ADD_VALUES before Phase 12 rather than running it as something else", async () => {
+        setup();
+        const { id } = await enqueue({
+            idempotencyKey: "delta", opType: "ADD_VALUES", uid: "u1",
+            laneKey: "uid:__ACCOUNT__:u1", attrs: { groups: ["a"] },
+        });
+        await drain();
+
+        const row = await store.getStatus(id);
+        expect(row!.status).toBe("REJECTED_PRE_DISPATCH");
+        expect(row!.errorCode).toBe("UNSUPPORTED_OP_TYPE:ADD_VALUES");
     });
 });

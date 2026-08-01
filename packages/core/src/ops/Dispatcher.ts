@@ -38,6 +38,18 @@ export interface DispatcherConfig {
    * missed.
    */
   readBackGraceMs?: number | undefined;
+  /**
+   * How long a row may sit `RUNNING` before the reaper assumes its dispatcher
+   * died. Default 10 minutes.
+   *
+   * Must exceed the longest legitimate attempt -- the instance's deadline
+   * ceiling plus the read-back grace -- because reclaiming work that is still
+   * running puts two dispatchers on one mutation, which is worse than the
+   * stranded row it would be fixing.
+   */
+  reaperThresholdMs?: number | undefined;
+  /** How often to run a reaper pass. Default 60s. */
+  reaperIntervalMs?: number | undefined;
   /** Clock seam for tests. */
   now?: (() => number) | undefined;
   logger?: { error(msg: string): void } | undefined;
@@ -59,6 +71,8 @@ interface ResolvedDispatcherConfig {
   backoffBaseMs: number;
   backoffMaxMs: number;
   readBackGraceMs: number;
+  reaperThresholdMs: number;
+  reaperIntervalMs: number;
 }
 
 /** Roughly one backlog sample per second at the default 25ms claim interval. */
@@ -71,6 +85,8 @@ const DEFAULTS = {
   backoffBaseMs: 1_000,
   backoffMaxMs: 60_000,
   readBackGraceMs: 2_000,
+  reaperThresholdMs: 10 * 60_000,
+  reaperIntervalMs: 60_000,
 } as const;
 
 export interface DispatcherDeps {
@@ -82,10 +98,10 @@ export interface DispatcherDeps {
 
 /** What one attempt concluded, before it is written to the store. */
 interface Resolution {
-  outcome: OperationOutcome | "REQUEUE";
+  outcome: OperationOutcome | "REQUEUE" | "DEFER_READBACK";
   result?: unknown;
   errorCode?: string | null;
-  /** Delay before the row becomes claimable again, for REQUEUE. */
+  /** Delay before the row becomes claimable again, for REQUEUE and DEFER_READBACK. */
   delayMs?: number;
 }
 
@@ -115,6 +131,7 @@ export class Dispatcher {
   /** Rotating start offset, so one instance cannot always claim first. */
   private roundRobinCursor = 0;
   private backlogSampleCountdown = 0;
+  private lastReapAt = 0;
 
   private timer: ReturnType<typeof setInterval> | undefined;
   private cycleInFlight = false;
@@ -134,6 +151,8 @@ export class Dispatcher {
       backoffBaseMs: c.backoffBaseMs ?? DEFAULTS.backoffBaseMs,
       backoffMaxMs: c.backoffMaxMs ?? DEFAULTS.backoffMaxMs,
       readBackGraceMs: c.readBackGraceMs ?? DEFAULTS.readBackGraceMs,
+      reaperThresholdMs: c.reaperThresholdMs ?? DEFAULTS.reaperThresholdMs,
+      reaperIntervalMs: c.reaperIntervalMs ?? DEFAULTS.reaperIntervalMs,
     };
     this.now = c.now ?? (() => Date.now());
     this.logger = c.logger ?? { error: (m) => console.error(m) };
@@ -171,6 +190,8 @@ export class Dispatcher {
     this.cycleInFlight = true;
     const cycleStart = this.now();
     try {
+      await this.maybeReap();
+
       const available = this.computeAvailability();
       if (available.size === 0) return 0;
 
@@ -268,6 +289,58 @@ export class Dispatcher {
   }
 
   /**
+   * Recover rows abandoned by a dispatcher that died mid-attempt.
+   *
+   * Runs on its own slow cadence rather than every cycle: the store serializes
+   * replicas on an advisory lock, and a pass that finds nothing is still two
+   * statements against the hot table.
+   *
+   * A reaper is not optional bookkeeping. Without it a killed replica strands
+   * its claimed rows in `RUNNING` where no claim query will ever see them, and
+   * because the partition drop gate correctly refuses to drop a partition
+   * holding non-terminal rows, one stranded row quietly stops the retention
+   * window from bounding anything (BUG-2).
+   */
+  private async maybeReap(): Promise<void> {
+    const now = this.now();
+    if (now - this.lastReapAt < this.cfg.reaperIntervalMs) return;
+    this.lastReapAt = now;
+
+    try {
+      const result = await this.store.reapStale(
+          this.cfg.reaperThresholdMs,
+          this.readBackDelayCeilingMs(),
+      );
+      if (result.deferredForReadback > 0) {
+        this.metrics.counter(METRICS.REAPED, result.deferredForReadback, { route: "readback" });
+      }
+      if (result.requeued > 0) {
+        this.metrics.counter(METRICS.REAPED, result.requeued, { route: "requeue" });
+      }
+    } catch (e) {
+      // Recovery failing must not take the drain loop with it.
+      this.logger.error(`[dispatcher] reaper pass failed: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * A read-back delay generous enough for any instance the reaper might touch.
+   *
+   * The reaper works on rows without knowing which instance tuned what, so it
+   * takes the largest configured create deadline rather than guessing. Waiting
+   * too long only delays a resolution; waiting too little reads the target
+   * before it has finished and wrongly concludes the create missed.
+   */
+  private readBackDelayCeilingMs(): number {
+    let largest = 0;
+    for (const instanceId of this.registry.registeredIds()) {
+      const runtime = this.registry.getDefinition(instanceId)?.runtime;
+      if (runtime) largest = Math.max(largest, runtime.attemptDeadlineMs.create);
+    }
+    return largest + this.cfg.readBackGraceMs;
+  }
+
+  /**
    * Emit backlog depth, on a slower cadence than the claim loop.
    *
    * pendingCounts is a query per instance, and at a 25ms claim interval
@@ -353,6 +426,12 @@ export class Dispatcher {
       return { outcome: "REJECTED_PRE_DISPATCH", errorCode: "UNKNOWN_INSTANCE" };
     }
 
+    // A row reclaimed from AWAITING_READBACK is a create whose outcome is
+    // unknown. It resumes at the read-back and never re-issues the create.
+    if (op.priorStatus === "AWAITING_READBACK") {
+      return this.resumeReadBack(op, lease, runtime);
+    }
+
     const options = this.optionsFor(op, runtime);
     const attrs = (op.attrs ?? {}) as Record<string, any>;
 
@@ -360,6 +439,12 @@ export class Dispatcher {
       case "CREATE":  return this.attemptCreate(op, lease, runtime, options, attrs);
       case "UPDATE":  return this.attemptUpdate(op, lease, options, attrs);
       case "DELETE":  return this.attemptDelete(op, lease, options);
+      default:
+        // ADD_VALUES / REMOVE_VALUES are admitted by the schema from Phase 11
+        // so the migration carries the constraint, but dispatch lands in
+        // Phase 12. Until then such a row is refused rather than silently
+        // executed as something it is not.
+        return { outcome: "REJECTED_PRE_DISPATCH", errorCode: `UNSUPPORTED_OP_TYPE:${op.opType}` };
     }
   }
 
@@ -416,8 +501,40 @@ export class Dispatcher {
       return { outcome: "INDETERMINATE", errorCode: "DEADLINE_NO_NAME" };
     }
 
+    // Park the row and let go of everything. The wait used to be an inline
+    // sleep, which held the mutation slot, the connector lease, and the claim
+    // for its whole duration -- so a degraded target turned its own timeouts
+    // into reduced drain, worst exactly when it was already worst (BUG-1).
+    //
+    // The lane is the one thing that must survive: a second create on this
+    // name cannot run while this one's outcome is unknown. It does, because
+    // the claim query treats a not-yet-due AWAITING_READBACK row as blocking
+    // its lane.
+    return {
+      outcome: "DEFER_READBACK",
+      errorCode: "AWAITING_READBACK",
+      delayMs: runtime.attemptDeadlineMs.create + this.cfg.readBackGraceMs,
+    };
+  }
+
+  /**
+   * Resume a create whose read-back wait has elapsed.
+   *
+   * Reached only for a row claimed out of `AWAITING_READBACK`. It must search,
+   * never create: re-issuing here is precisely the duplicate the deferral
+   * exists to prevent (BUG-1). The status is the marker that distinguishes
+   * this from a fresh attempt.
+   */
+  private async resumeReadBack(
+      op: ClaimedOperation,
+      lease: Lease,
+      runtime: ResolvedRuntimeConfig,
+  ): Promise<Resolution> {
+    if (op.nameAttrValue === null || op.nameAttrValue === undefined) {
+      return { outcome: "INDETERMINATE", errorCode: "DEADLINE_NO_NAME" };
+    }
+
     const nameAttribute = await this.nameAttributeFor(lease, op.objectClass);
-    await this.sleep(runtime.attemptDeadlineMs.create + this.cfg.readBackGraceMs);
 
     try {
       const found = await this.readBackByName(lease, op.objectClass, nameAttribute, op.nameAttrValue, runtime);
@@ -553,6 +670,19 @@ export class Dispatcher {
   }
 
   private async finalize(op: ClaimedOperation, r: Resolution): Promise<void> {
+    if (r.outcome === "DEFER_READBACK") {
+      // No lane deferral here: the lane is held by the row's own
+      // AWAITING_READBACK status, which the claim query honours durably. An
+      // in-memory hold would be lost on restart, and the row would outlive it.
+      this.metrics.counter(METRICS.DEFERRED_READBACK, 1, { instance: op.instanceId });
+      try {
+        await this.store.deferForReadback(op.id, new Date(this.now() + (r.delayMs ?? 0)));
+      } catch (e) {
+        this.logger.error(`[dispatcher] defer failed for ${op.id}: ${(e as Error).message}`);
+      }
+      return;
+    }
+
     if (r.outcome === "REQUEUE") {
       if (r.delayMs && r.delayMs > 0) {
         this.laneDeferredUntil.set(op.laneKey, this.now() + r.delayMs);

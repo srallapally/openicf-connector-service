@@ -69,10 +69,28 @@ CREATE TABLE IF NOT EXISTS operations (
 
     idempotency_key  text        NOT NULL,
 
+    -- Earliest time this row may be claimed again. Set when an operation is
+    -- deferred rather than executed -- currently only the create read-back
+    -- wait, which used to be an inline sleep holding a mutation slot.
+    not_before       timestamptz NULL,
+
+    -- Terminality, derived once instead of enumerated at every use site.
+    --
+    -- Four places previously spelled out the non-terminal statuses by hand:
+    -- the drop gate, the claim index, the lane index, and the status check.
+    -- Adding a status meant remembering all four, and forgetting the drop gate
+    -- would have let a partition holding live work be dropped -- silently, and
+    -- in the direction of losing an answer a caller was promised. Deriving it
+    -- makes that class of mistake unrepresentable.
+    terminal         boolean     NOT NULL
+                     GENERATED ALWAYS AS (
+                         status NOT IN ('PENDING', 'RUNNING', 'AWAITING_READBACK')
+                     ) STORED,
+
     CONSTRAINT operations_pkey PRIMARY KEY (id, created_at),
 
     CONSTRAINT operations_op_type_check
-        CHECK (op_type IN ('CREATE', 'UPDATE', 'DELETE')),
+        CHECK (op_type IN ('CREATE', 'UPDATE', 'DELETE', 'ADD_VALUES', 'REMOVE_VALUES')),
 
     CONSTRAINT operations_priority_check
         CHECK (priority IN ('interactive', 'batch')),
@@ -81,6 +99,7 @@ CREATE TABLE IF NOT EXISTS operations (
         CHECK (status IN (
             'PENDING',
             'RUNNING',
+            'AWAITING_READBACK',
             'SUCCEEDED',
             'REJECTED_PRE_DISPATCH',
             'FAILED_CONFIRMED',
@@ -91,15 +110,15 @@ CREATE TABLE IF NOT EXISTS operations (
 -- Claim path. Partial so the index holds only the working set: PENDING rows
 -- are a small and roughly constant fraction of the table, while the terminal
 -- rows that dominate it never appear here at all.
-CREATE INDEX IF NOT EXISTS operations_pending_idx
-    ON operations (instance_id, status)
-    WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS operations_claimable_idx
+    ON operations (instance_id, status, not_before)
+    WHERE NOT terminal;
 
 -- Lane serialization. Answers "which lanes are busy for this instance" without
 -- touching terminal rows.
 CREATE INDEX IF NOT EXISTS operations_lane_idx
     ON operations (instance_id, lane_key)
-    WHERE status IN ('PENDING', 'RUNNING');
+    WHERE NOT terminal;
 
 -- Idempotent enqueue lookup.
 --
@@ -182,7 +201,7 @@ BEGIN
     END IF;
 
     EXECUTE format(
-        'SELECT count(*) FROM %I WHERE status IN (''PENDING'', ''RUNNING'')',
+        'SELECT count(*) FROM %I WHERE NOT terminal',
         part_name
     ) INTO live_rows;
 

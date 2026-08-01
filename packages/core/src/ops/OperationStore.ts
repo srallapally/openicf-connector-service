@@ -3,7 +3,12 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Pool } from "pg";
-import type { OperationOutcome, OperationPriority, OperationStatus } from "../spi/types.js";
+import type {
+  OperationOutcome,
+  OperationPendingStatus,
+  OperationPriority,
+  OperationStatus,
+} from "../spi/types.js";
 
 /** Absolute path to the DDL that backs this store. */
 export const OPERATIONS_SCHEMA_PATH = path.join(
@@ -11,8 +16,15 @@ export const OPERATIONS_SCHEMA_PATH = path.join(
     "schema.sql",
 );
 
-/** Mutation kinds the operation table records. Reads are synchronous and never enqueued. */
-export type OperationType = "CREATE" | "UPDATE" | "DELETE";
+/**
+ * Mutation kinds the operation table records. Reads are synchronous and never
+ * enqueued.
+ *
+ * `ADD_VALUES` and `REMOVE_VALUES` are admitted by the schema from Phase 11 so
+ * that Phase 12, which teaches the dispatcher to execute them, changes no DDL.
+ * Enqueuing one before then is accepted by the table and never dispatched.
+ */
+export type OperationType = "CREATE" | "UPDATE" | "DELETE" | "ADD_VALUES" | "REMOVE_VALUES";
 
 const TERMINAL_STATUSES: readonly OperationOutcome[] = [
   "SUCCEEDED",
@@ -54,6 +66,22 @@ export interface ClaimedOperation {
   attemptCount: number;
   createdAt: Date;
   idempotencyKey: string;
+  /**
+   * The status this row held before it was claimed.
+   *
+   * `AWAITING_READBACK` means this is a resumed create whose outcome is
+   * unknown: the dispatcher must read the object back, never re-issue the
+   * create. Anything else is a fresh attempt.
+   */
+  priorStatus: OperationPendingStatus;
+}
+
+/** Outcome of one reaper pass, by the route each row took. */
+export interface ReapResult {
+  /** Creates handed to the read-back path, since their outcome is unknown. */
+  deferredForReadback: number;
+  /** Idempotent mutations returned straight to the backlog. */
+  requeued: number;
 }
 
 export interface OperationStatusRow {
@@ -88,6 +116,14 @@ function advisoryLockKey(idempotencyKey: string): string {
   return createHash("sha256").update(idempotencyKey).digest().readBigInt64BE(0).toString();
 }
 
+/**
+ * Advisory lock the reaper serializes on.
+ *
+ * A fixed arbitrary constant: every replica competes for this one lock, and
+ * whoever holds it does that pass alone.
+ */
+const REAPER_LOCK_KEY = "7314159265358979";
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -107,6 +143,20 @@ const CLAIM_SQL = `
 WITH caps AS (
     SELECT * FROM unnest($1::text[], $2::int[]) AS t(instance_id, cap)
 ),
+blocked_lanes AS (
+    -- Lanes occupied by work that is not claimable right now: an attempt in
+    -- flight, or a create waiting out its read-back delay.
+    --
+    -- This is what makes lane serialization survive a process restart. The
+    -- dispatcher also passes its in-memory active set, but that dies with the
+    -- process, and a deferred read-back outlives the cycle that deferred it --
+    -- so without this a second create on the same name could run while the
+    -- first one's outcome was still unknown.
+    SELECT DISTINCT o.instance_id, o.lane_key
+    FROM operations o
+    WHERE o.status = 'RUNNING'
+       OR (o.status = 'AWAITING_READBACK' AND o.not_before > now())
+),
 lane_leaders AS (
     -- At most one operation per (instance, lane) may enter a cycle. The lane
     -- exists to serialize writes against a single object, so claiming two of
@@ -115,6 +165,7 @@ lane_leaders AS (
            o.created_at,
            o.priority,
            o.instance_id,
+           o.status,
            c.cap,
            row_number() OVER (
                PARTITION BY o.instance_id, o.lane_key
@@ -122,8 +173,19 @@ lane_leaders AS (
            ) AS lane_rn
     FROM operations o
     JOIN caps c ON c.instance_id = o.instance_id
-    WHERE o.status = 'PENDING'
+    WHERE (
+            o.status = 'PENDING'
+            -- A deferred read-back becomes claimable once its wait is over.
+            -- Ordering by created_at then picks it ahead of any later
+            -- operation queued on the same lane, which is what lets it resume
+            -- rather than be overtaken.
+            OR (o.status = 'AWAITING_READBACK' AND o.not_before <= now())
+          )
       AND NOT (o.lane_key = ANY($3::text[]))
+      AND NOT EXISTS (
+            SELECT 1 FROM blocked_lanes b
+            WHERE b.instance_id = o.instance_id AND b.lane_key = o.lane_key
+          )
 ),
 ranked AS (
     -- Rank after collapsing lanes, not before: ranking first would let a
@@ -132,6 +194,7 @@ ranked AS (
     SELECT id,
            created_at,
            priority,
+           status,
            cap,
            row_number() OVER (
                PARTITION BY instance_id
@@ -148,19 +211,25 @@ picked AS (
     LIMIT $4
 ),
 locked AS (
-    SELECT o.id, o.created_at
+    -- prior_status is captured here, before the UPDATE overwrites it. The
+    -- dispatcher needs it to tell a fresh attempt from a resumed read-back:
+    -- resuming must search for the object, never re-issue the create, which
+    -- is the whole point of having deferred it.
+    SELECT o.id, o.created_at, o.status AS prior_status
     FROM operations o
     JOIN picked p ON p.id = o.id AND p.created_at = o.created_at
-    WHERE o.status = 'PENDING'
+    WHERE NOT o.terminal AND o.status <> 'RUNNING'
     FOR UPDATE OF o SKIP LOCKED
 )
 UPDATE operations o
 SET status = 'RUNNING',
-    claimed_at = now()
+    claimed_at = now(),
+    not_before = NULL
 FROM locked l
 WHERE o.id = l.id AND o.created_at = l.created_at
 RETURNING o.id, o.instance_id, o.object_class, o.op_type, o.priority, o.lane_key,
-          o.uid, o.name_attr_value, o.attrs, o.attempt_count, o.created_at, o.idempotency_key
+          o.uid, o.name_attr_value, o.attrs, o.attempt_count, o.created_at,
+          o.idempotency_key, l.prior_status
 `;
 
 /**
@@ -180,6 +249,8 @@ export interface OperationStoreApi {
   ): Promise<ClaimedOperation[]>;
   finalize(id: string, outcome: OperationOutcome, result?: unknown, errorCode?: string | null): Promise<boolean>;
   requeue(id: string): Promise<boolean>;
+  deferForReadback(id: string, notBefore: Date): Promise<boolean>;
+  reapStale(thresholdMs: number, readBackDelayMs: number): Promise<ReapResult>;
   pendingCounts(instanceId: string): Promise<PendingCounts>;
   getStatus(id: string): Promise<OperationStatusRow | null>;
 }
@@ -318,6 +389,7 @@ export class OperationStore implements OperationStoreApi {
       attemptCount: Number(r.attempt_count),
       createdAt: r.created_at as Date,
       idempotencyKey: String(r.idempotency_key),
+      priorStatus: r.prior_status as OperationPendingStatus,
     }));
   }
 
@@ -405,6 +477,110 @@ export class OperationStore implements OperationStoreApi {
    * claims. Returns false if the operation was not RUNNING, which is what a
    * duplicate requeue looks like.
    */
+  /**
+   * Park a timed-out create until its read-back is due.
+   *
+   * The row gives up its claim, and with it the mutation slot and the
+   * connector lease the dispatcher was holding purely to keep an inline sleep
+   * alive. It keeps its lane -- `blocked_lanes` in the claim query sees an
+   * AWAITING_READBACK row whose wait has not elapsed -- because a second
+   * create on the same name must not run while this one's outcome is unknown.
+   *
+   * Deliberately does NOT increment attempt_count. The read-back path allows
+   * exactly one retry, so counting the wait as an attempt would spend that
+   * budget before the read-back ever ran. This is the same trap that made
+   * backoff consume its retries without retrying.
+   */
+  async deferForReadback(id: string, notBefore: Date): Promise<boolean> {
+    if (!isOperationId(id)) return false;
+    const res = await this.pool.query(
+        `UPDATE operations
+            SET status = 'AWAITING_READBACK',
+                claimed_at = NULL,
+                not_before = $2
+          WHERE id = $1 AND status = 'RUNNING'`,
+        [id, notBefore],
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Recover rows abandoned by a dispatcher that died mid-attempt.
+   *
+   * Without this a killed replica strands its claimed rows in RUNNING forever:
+   * the claim query looks for PENDING, so nothing ever sees them again. The
+   * caller polls a status that never changes, and -- worse -- the partition
+   * drop gate correctly refuses to drop any partition holding a non-terminal
+   * row, so one abandoned row pins its day open and the retention window
+   * silently stops bounding anything.
+   *
+   * `thresholdMs` must exceed the longest legitimate attempt: the instance's
+   * deadline ceiling plus the read-back grace. Reclaiming work that is still
+   * running would put two dispatchers on one mutation, which is a worse bug
+   * than the one being fixed, so the threshold is deliberately generous.
+   *
+   * Routing by op type is the same reasoning as the resolution protocol. A
+   * create's outcome is unknown, and blind retry is exactly how duplicate
+   * accounts happen, so it goes to the read-back path. Update and delete are
+   * idempotent -- replace, and delete-then-UNKNOWN_UID -- so they return
+   * straight to the backlog. Neither increments attempt_count: the process
+   * died, which is not the operation's fault.
+   *
+   * Guarded by a transaction-scoped advisory lock so concurrent replicas do
+   * not all reap the same rows. A replica that cannot take the lock skips the
+   * pass; another one is already doing it.
+   */
+  async reapStale(thresholdMs: number, readBackDelayMs: number): Promise<ReapResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const lock = await client.query(
+          "SELECT pg_try_advisory_xact_lock($1::bigint) AS acquired",
+          [REAPER_LOCK_KEY],
+      );
+      if (lock.rows[0]?.acquired !== true) {
+        await client.query("ROLLBACK");
+        return { deferredForReadback: 0, requeued: 0 };
+      }
+
+      const cutoff = `${thresholdMs} milliseconds`;
+
+      const deferred = await client.query(
+          `UPDATE operations
+              SET status = 'AWAITING_READBACK',
+                  claimed_at = NULL,
+                  not_before = now() + ($2 || ' milliseconds')::interval
+            WHERE status = 'RUNNING'
+              AND op_type = 'CREATE'
+              AND claimed_at < now() - $1::interval`,
+          [cutoff, String(readBackDelayMs)],
+      );
+
+      const requeued = await client.query(
+          `UPDATE operations
+              SET status = 'PENDING',
+                  claimed_at = NULL,
+                  not_before = NULL
+            WHERE status = 'RUNNING'
+              AND op_type <> 'CREATE'
+              AND claimed_at < now() - $1::interval`,
+          [cutoff],
+      );
+
+      await client.query("COMMIT");
+      return {
+        deferredForReadback: deferred.rowCount ?? 0,
+        requeued: requeued.rowCount ?? 0,
+      };
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => { /* the original error is the useful one */ });
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
   async requeue(id: string): Promise<boolean> {
     if (!isOperationId(id)) return false;
     const res = await this.pool.query(
@@ -427,9 +603,13 @@ export class OperationStore implements OperationStoreApi {
    */
   async pendingCounts(instanceId: string): Promise<PendingCounts> {
     const res = await this.pool.query(
+        // A deferred read-back counts toward the backlog: it is unresolved work
+        // the caller is still waiting on, and admitting more against an
+        // instance that is accumulating them would hide the problem.
         `SELECT priority, count(*)::int AS n
            FROM operations
-          WHERE instance_id = $1 AND status = 'PENDING'
+          WHERE instance_id = $1
+            AND status IN ('PENDING', 'AWAITING_READBACK')
           GROUP BY priority`,
         [instanceId],
     );

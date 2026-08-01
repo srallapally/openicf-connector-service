@@ -33,10 +33,10 @@ Severity describes consequence, not effort.
 
 | ID | Sev | Status | Component | Title |
 |---|---|---|---|---|
-| [BUG-1](#bug-1) | medium | OPEN | `ops/Dispatcher` | Create read-back sleeps inline, holding the lease and mutation slot |
-| [BUG-2](#bug-2) | high | OPEN | `ops/*` | Rows left `RUNNING` by a dead dispatcher are never recovered |
+| [BUG-1](#bug-1) | medium | FIXED | `ops/Dispatcher` | Create read-back sleeps inline, holding the lease and mutation slot |
+| [BUG-2](#bug-2) | high | FIXED | `ops/*` | Rows left `RUNNING` by a dead dispatcher are never recovered |
 | [BUG-3](#bug-3) | medium | OPEN | `ops/*` | Delta updates cannot be enqueued; the `idempotentDelta` gate guards an unreachable path |
-| [RFE-1](#rfe-1) | low | OPEN | `config/runtime` | Interactive slice floor reserves a slot even at fraction 0 |
+| [RFE-1](#rfe-1) | low | FIXED | `config/runtime` | Interactive slice floor reserves a slot even at fraction 0 |
 
 ---
 
@@ -46,7 +46,7 @@ Severity describes consequence, not effort.
 | | |
 |---|---|
 | **Severity** | medium |
-| **Status** | OPEN |
+| **Status** | FIXED in Phase 11 |
 | **Component** | `packages/core/src/ops/Dispatcher.ts` |
 | **Reported** | 2026-08-01 |
 | **Affects** | `main@491d2ac` (Phase 7 onward) |
@@ -171,7 +171,7 @@ failure mode, not an edit to one `await`.
 | | |
 |---|---|
 | **Severity** | high |
-| **Status** | OPEN |
+| **Status** | FIXED in Phase 11 |
 | **Component** | `packages/core/src/ops/` (`Dispatcher`, `OperationStore`, `schema.sql`) |
 | **Reported** | 2026-08-01 |
 | **Affects** | `main@491d2ac` (Phase 7 onward) |
@@ -324,7 +324,7 @@ operation it names cannot be enqueued.
 | | |
 |---|---|
 | **Severity** | low |
-| **Status** | OPEN — needs a decision, not a fix |
+| **Status** | FIXED in Phase 11 (option 2: `0` honoured as opt-out) |
 | **Component** | `packages/core/src/config/runtime.ts` (`computeInteractiveSlots`) |
 | **Reported** | 2026-08-01 |
 | **Affects** | `main@491d2ac` (Phase 3 onward) |
@@ -376,3 +376,68 @@ a tuning knob. Either way, a value should not be accepted and then disregarded.
 
 Whichever is chosen wants a CP entry, since it either amends or confirms a CP-2
 line.
+
+
+---
+
+## Resolutions
+
+### BUG-1 — FIXED (Phase 11)
+
+`resolveCreateAfterDeadline` no longer sleeps. A timed-out create is parked as
+`AWAITING_READBACK` with a `not_before` timestamp, releasing its mutation slot,
+its connector lease, and its claim. The claim query reclaims it once due and
+marks it as a resume, so it searches instead of re-issuing the create.
+
+Both traps named in the report were addressed:
+
+- `deferForReadback` does not increment `attempt_count`, so the wait does not
+  spend the single retry the read-back path allows.
+- `priorStatus` on the claimed row is the marker that distinguishes a resume
+  from a fresh attempt, so the create is never re-issued.
+
+The lane hold survives, as required: `blocked_lanes` in the claim query treats
+a not-yet-due `AWAITING_READBACK` row as occupying its lane, which also makes
+lane serialization durable across a restart rather than living only in the
+dispatcher's memory.
+
+The addendum's four sites were closed by deriving terminality once, in a
+`terminal boolean GENERATED ALWAYS AS (...) STORED` column. The drop gate, the
+claimable index, and the lane index are all predicated on it; the status check
+constraint is the only remaining enumeration, and it fails loudly at insert.
+
+Verified: a deferred create releases its slot while an unrelated operation on
+the same instance proceeds; a second create on the same lane is refused for the
+duration; a resumed row performs one search and zero creates; and against
+PostgreSQL 16 the drop gate refuses a partition holding a deferred read-back.
+
+### BUG-2 — FIXED (Phase 11)
+
+`OperationStore.reapStale` returns rows claimed longer ago than a configurable
+threshold (default 10 minutes) to the backlog, and the dispatcher runs a pass
+on its own slow cadence.
+
+Routing follows the resolution protocol: an abandoned create's outcome is
+unknown, so it is deferred for read-back rather than re-issued; update and
+delete are idempotent and go straight to `PENDING`. Neither increments
+`attempt_count` — the process died, which is not the operation's fault.
+
+The interaction flagged on this entry is handled: the reaper only considers
+`RUNNING` rows, so a row waiting out its read-back is not mistaken for an
+abandoned one and reclaimed mid-wait.
+
+Concurrent replicas serialize on a transaction-scoped advisory lock; a replica
+that cannot take it skips the pass rather than double-reaping. Verified with
+three concurrent reapers over six stranded rows: six recovered in total, none
+twice, all with `attempt_count` still zero.
+
+### RFE-1 — FIXED (Phase 11), option 2
+
+`interactiveSliceFraction: 0` now yields zero reserved slots. The floor still
+applies to every positive fraction, which is where it was aimed: stopping a
+small fraction against a small budget from rounding down to nothing.
+
+Option 2 over option 1 because a value that is documented, in range, and
+accepted should not then be disregarded — and `0` has an obvious meaning that
+the previous behaviour contradicted. To be ratified at CP-4 as an amendment to
+the CP-2 line.

@@ -273,6 +273,165 @@ export function runOperationStoreContract(name: string, factory: HarnessFactory)
       });
     });
 
+    describe("deferForReadback", () => {
+      it("parks a running create and releases its claim", async () => {
+        const { id } = await store.enqueue(op({ laneKey: "lane-defer" }));
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+
+        expect(await store.deferForReadback(id, new Date(Date.now() - 1_000))).toBe(true);
+        expect((await store.getStatus(id))!.status).toBe("AWAITING_READBACK");
+      });
+
+      it("does not count the wait as an attempt", async () => {
+        // The read-back path allows exactly one retry. Counting the wait would
+        // spend that budget before the read-back ever ran -- the same trap that
+        // made backoff consume its retries without retrying.
+        const { id } = await store.enqueue(op());
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        await store.deferForReadback(id, new Date(Date.now() - 1_000));
+
+        expect((await store.getStatus(id))!.attemptCount).toBe(0);
+      });
+
+      it("refuses to defer an operation that is not running", async () => {
+        const { id } = await store.enqueue(op());
+        expect(await store.deferForReadback(id, new Date())).toBe(false);
+      });
+
+      it("holds the row back until its wait has elapsed", async () => {
+        const { id } = await store.enqueue(op({ laneKey: "lane-wait" }));
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        await store.deferForReadback(id, new Date(Date.now() + 60_000));
+
+        expect(await store.claimBatch(10, [], ALL({ "ad-prod": 5 }))).toHaveLength(0);
+      });
+
+      it("reclaims the row once the wait is over, marked as a resume", async () => {
+        const { id } = await store.enqueue(op({ laneKey: "lane-due" }));
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        await store.deferForReadback(id, new Date(Date.now() - 1));
+
+        const [again] = await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        expect(again!.id).toBe(id);
+        // The marker that tells the dispatcher to search rather than re-create.
+        expect(again!.priorStatus).toBe("AWAITING_READBACK");
+      });
+
+      it("marks an ordinary claim as PENDING, not a resume", async () => {
+        await store.enqueue(op());
+        const [claimed] = await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        expect(claimed!.priorStatus).toBe("PENDING");
+      });
+
+      it("keeps the lane blocked while the wait runs", async () => {
+        // A second create on the same name must not run while the first one's
+        // outcome is unknown -- and this hold has to be durable, since the
+        // deferral outlives the cycle that made it.
+        const { id } = await store.enqueue(op({ idempotencyKey: "first", laneKey: "shared-lane" }));
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        await store.deferForReadback(id, new Date(Date.now() + 60_000));
+
+        await store.enqueue(op({ idempotencyKey: "second", laneKey: "shared-lane" }));
+
+        expect(await store.claimBatch(10, [], ALL({ "ad-prod": 5 }))).toHaveLength(0);
+      });
+
+      it("does not block unrelated lanes", async () => {
+        const { id } = await store.enqueue(op({ idempotencyKey: "held", laneKey: "lane-a" }));
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        await store.deferForReadback(id, new Date(Date.now() + 60_000));
+
+        await store.enqueue(op({ idempotencyKey: "free", laneKey: "lane-b" }));
+
+        const claimed = await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        expect(claimed.map(c => c.laneKey)).toEqual(["lane-b"]);
+      });
+
+      it("counts a deferred read-back toward the backlog", async () => {
+        const { id } = await store.enqueue(op());
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        await store.deferForReadback(id, new Date(Date.now() + 60_000));
+
+        // Unresolved work the caller is still waiting on; admitting more
+        // against an instance accumulating these would hide the problem.
+        expect(await store.pendingCounts("ad-prod")).toEqual({ interactive: 0, batch: 1 });
+      });
+    });
+
+    describe("reapStale", () => {
+      it("leaves a freshly claimed row alone", async () => {
+        await store.enqueue(op());
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+
+        expect(await store.reapStale(60_000, 5_000)).toEqual({
+          deferredForReadback: 0, requeued: 0,
+        });
+      });
+
+      it("sends an abandoned create to the read-back path", async () => {
+        // Its outcome is unknown, and blind retry is how duplicate accounts
+        // happen -- so it must be read back, not re-issued.
+        const { id } = await store.enqueue(op({ opType: "CREATE" }));
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+
+        const reaped = await store.reapStale(0, 60_000);
+        expect(reaped.deferredForReadback).toBe(1);
+        expect((await store.getStatus(id))!.status).toBe("AWAITING_READBACK");
+      });
+
+      it("returns an abandoned update or delete straight to the backlog", async () => {
+        // Replace and delete are idempotent, so replaying them is safe.
+        const a = await store.enqueue(op({
+          idempotencyKey: "u", opType: "UPDATE", uid: "u1", laneKey: "uid:__ACCOUNT__:u1",
+        }));
+        const b = await store.enqueue(op({
+          idempotencyKey: "d", opType: "DELETE", uid: "u2", laneKey: "uid:__ACCOUNT__:u2",
+        }));
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+
+        const reaped = await store.reapStale(0, 60_000);
+        expect(reaped.requeued).toBe(2);
+        expect((await store.getStatus(a.id))!.status).toBe("PENDING");
+        expect((await store.getStatus(b.id))!.status).toBe("PENDING");
+      });
+
+      it("does not charge the operation for the process dying", async () => {
+        const { id } = await store.enqueue(op({
+          opType: "DELETE", uid: "u9", laneKey: "uid:__ACCOUNT__:u9",
+        }));
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        await store.reapStale(0, 60_000);
+
+        expect((await store.getStatus(id))!.attemptCount).toBe(0);
+      });
+
+      it("ignores rows that are not RUNNING, including deferred read-backs", async () => {
+        const pending = await store.enqueue(op({ idempotencyKey: "p", laneKey: "lane-p" }));
+        const deferred = await store.enqueue(op({ idempotencyKey: "w", laneKey: "lane-w" }));
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        await store.deferForReadback(deferred.id, new Date(Date.now() + 60_000));
+
+        // A row waiting out its read-back looks abandoned by age; reclaiming it
+        // mid-wait would re-issue the create the deferral exists to avoid.
+        const reaped = await store.reapStale(0, 60_000);
+        expect(reaped.deferredForReadback).toBe(1);   // only the still-RUNNING one
+        expect((await store.getStatus(deferred.id))!.status).toBe("AWAITING_READBACK");
+        void pending;
+      });
+
+      it("makes a reaped update claimable again", async () => {
+        const { id } = await store.enqueue(op({
+          opType: "UPDATE", uid: "u1", laneKey: "uid:__ACCOUNT__:u1",
+        }));
+        await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        await store.reapStale(0, 60_000);
+
+        const [again] = await store.claimBatch(10, [], ALL({ "ad-prod": 5 }));
+        expect(again!.id).toBe(id);
+        expect(again!.priorStatus).toBe("PENDING");
+      });
+    });
+
     describe("pendingCounts", () => {
       it("counts only PENDING rows, split by class", async () => {
         await store.enqueue(op({ laneKey: "l1" }));

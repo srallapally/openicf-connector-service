@@ -53,7 +53,8 @@ async function drain(timeoutMs = 5_000): Promise<void> {
     while (Date.now() - startedAt < timeoutMs) {
         await dispatcher.runCycle();
         await new Promise(r => setTimeout(r, 2));
-        const open = store.allRows().some(r => r.status === "PENDING" || r.status === "RUNNING");
+        const open = store.allRows().some(r =>
+            r.status === "PENDING" || r.status === "RUNNING" || r.status === "AWAITING_READBACK");
         if (!open && dispatcher.inFlightCount === 0) return;
     }
     throw new Error("drain timed out");

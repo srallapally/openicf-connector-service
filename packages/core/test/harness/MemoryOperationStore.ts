@@ -18,8 +18,14 @@ import type {
   OperationStoreApi,
   OperationType,
   PendingCounts,
+  ReapResult,
 } from "../../src/ops/OperationStore.js";
-import type { OperationOutcome, OperationPriority, OperationStatus } from "../../src/spi/types.js";
+import type {
+  OperationOutcome,
+  OperationPendingStatus,
+  OperationPriority,
+  OperationStatus,
+} from "../../src/spi/types.js";
 
 const TERMINAL: ReadonlySet<string> = new Set<OperationOutcome>([
   "SUCCEEDED",
@@ -43,6 +49,8 @@ interface Row {
   errorCode: string | null;
   attemptCount: number;
   createdAt: Date;
+  claimedAt: Date | null;
+  notBefore: Date | null;
   finalizedAt: Date | null;
   idempotencyKey: string;
 }
@@ -109,6 +117,8 @@ export class MemoryOperationStore implements OperationStoreApi {
       errorCode: null,
       attemptCount: 0,
       createdAt,
+      claimedAt: null,
+      notBefore: null,
       finalizedAt: null,
       idempotencyKey: op.idempotencyKey,
     });
@@ -130,10 +140,28 @@ export class MemoryOperationStore implements OperationStoreApi {
     }
     if (remaining.size === 0) return [];
 
+    const now = this.now();
+
+    // Lanes occupied by work that is not claimable: an attempt in flight, or a
+    // create still waiting out its read-back delay. Mirrors blocked_lanes in
+    // the SQL, and is what makes lane serialization outlive the cycle that
+    // established it.
+    const blockedLanes = new Set<string>();
+    for (const row of this.rows.values()) {
+      if (row.status === "RUNNING") blockedLanes.add(laneOf(row));
+      else if (row.status === "AWAITING_READBACK"
+          && row.notBefore !== null && row.notBefore.getTime() > now) {
+        blockedLanes.add(laneOf(row));
+      }
+    }
+
     const candidates = Array.from(this.rows.values())
-        .filter(r => r.status === "PENDING")
+        .filter(r => r.status === "PENDING"
+            || (r.status === "AWAITING_READBACK"
+                && (r.notBefore === null || r.notBefore.getTime() <= now)))
         .filter(r => remaining.has(r.instanceId))
         .filter(r => !busy.has(r.laneKey))
+        .filter(r => !blockedLanes.has(laneOf(r)))
         .sort(compareClaimOrder);
 
     const claimed: ClaimedOperation[] = [];
@@ -148,13 +176,54 @@ export class MemoryOperationStore implements OperationStoreApi {
       if (left <= 0) continue;
       if (takenLanes.has(row.laneKey)) continue;
 
+      const priorStatus = row.status as OperationPendingStatus;
       row.status = "RUNNING";
+      row.claimedAt = new Date(now);
+      row.notBefore = null;
       remaining.set(row.instanceId, left - 1);
       takenLanes.add(row.laneKey);
-      claimed.push(toClaimed(row));
+      claimed.push(toClaimed(row, priorStatus));
     }
 
     return claimed;
+  }
+
+  async deferForReadback(id: string, notBefore: Date): Promise<boolean> {
+    const row = this.rows.get(id);
+    if (!row || row.status !== "RUNNING") return false;
+    row.status = "AWAITING_READBACK";
+    row.claimedAt = null;
+    row.notBefore = notBefore;
+    // No attempt_count increment: the read-back path allows exactly one retry,
+    // and counting the wait would spend it before the read-back ran.
+    return true;
+  }
+
+  async reapStale(thresholdMs: number, readBackDelayMs: number): Promise<ReapResult> {
+    const now = this.now();
+    const result: ReapResult = { deferredForReadback: 0, requeued: 0 };
+
+    for (const row of this.rows.values()) {
+      if (row.status !== "RUNNING") continue;
+      if (row.claimedAt === null) continue;
+      if (now - row.claimedAt.getTime() < thresholdMs) continue;
+
+      if (row.opType === "CREATE") {
+        // Outcome unknown; blind retry is the duplicate-account path.
+        row.status = "AWAITING_READBACK";
+        row.claimedAt = null;
+        row.notBefore = new Date(now + readBackDelayMs);
+        result.deferredForReadback++;
+      } else {
+        row.status = "PENDING";
+        row.claimedAt = null;
+        row.notBefore = null;
+        result.requeued++;
+      }
+      // Neither path increments attempt_count: the process died, which is not
+      // the operation's fault.
+    }
+    return result;
   }
 
   async finalize(
@@ -198,7 +267,8 @@ export class MemoryOperationStore implements OperationStoreApi {
   async pendingCounts(instanceId: string): Promise<PendingCounts> {
     const counts: PendingCounts = { interactive: 0, batch: 0 };
     for (const row of this.rows.values()) {
-      if (row.instanceId !== instanceId || row.status !== "PENDING") continue;
+      if (row.instanceId !== instanceId) continue;
+      if (row.status !== "PENDING" && row.status !== "AWAITING_READBACK") continue;
       if (row.priority === "interactive") counts.interactive++;
       else counts.batch++;
     }
@@ -249,7 +319,12 @@ function compareClaimOrder(a: Row, b: Row): number {
   return a.createdAt.getTime() - b.createdAt.getTime();
 }
 
-function toClaimed(row: Row): ClaimedOperation {
+/** Lanes are scoped per instance, matching the (instance_id, lane_key) index. */
+function laneOf(row: Row): string {
+  return `${row.instanceId}\u0000${row.laneKey}`;
+}
+
+function toClaimed(row: Row, priorStatus: OperationPendingStatus): ClaimedOperation {
   return {
     id: row.id,
     instanceId: row.instanceId,
@@ -263,6 +338,7 @@ function toClaimed(row: Row): ClaimedOperation {
     attemptCount: row.attemptCount,
     createdAt: row.createdAt,
     idempotencyKey: row.idempotencyKey,
+    priorStatus,
   };
 }
 

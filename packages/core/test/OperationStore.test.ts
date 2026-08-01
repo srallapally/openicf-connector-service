@@ -92,19 +92,25 @@ describe("schema.sql", () => {
     });
 
     it("constrains op_type, priority, and the full status taxonomy", () => {
-        expect(sql).toMatch(/op_type IN \('CREATE', 'UPDATE', 'DELETE'\)/);
+        expect(sql).toMatch(/op_type IN \('CREATE', 'UPDATE', 'DELETE', 'ADD_VALUES', 'REMOVE_VALUES'\)/);
         expect(sql).toMatch(/priority IN \('interactive', 'batch'\)/);
         for (const status of [
-            "PENDING", "RUNNING", "SUCCEEDED",
+            "PENDING", "RUNNING", "AWAITING_READBACK", "SUCCEEDED",
             "REJECTED_PRE_DISPATCH", "FAILED_CONFIRMED", "INDETERMINATE",
         ]) {
             expect(sql, status).toContain(`'${status}'`);
         }
     });
 
-    it("has the partial pending index and the lane index", () => {
-        expect(sql).toMatch(/operations_pending_idx[\s\S]*?\(instance_id, status\)[\s\S]*?WHERE status = 'PENDING'/);
-        expect(sql).toMatch(/operations_lane_idx[\s\S]*?\(instance_id, lane_key\)[\s\S]*?WHERE status IN \('PENDING', 'RUNNING'\)/);
+    it("indexes the claimable set and the lanes off one derived predicate", () => {
+        // Both are predicated on the generated terminal column rather than a
+        // hand-written status list, so adding a status cannot silently miss one.
+        expect(sql).toMatch(/operations_claimable_idx[\s\S]*?\(instance_id, status, not_before\)[\s\S]*?WHERE NOT terminal/);
+        expect(sql).toMatch(/operations_lane_idx[\s\S]*?\(instance_id, lane_key\)[\s\S]*?WHERE NOT terminal/);
+    });
+
+    it("derives terminality instead of enumerating it", () => {
+        expect(sql).toMatch(/terminal\s+boolean[\s\S]*?GENERATED ALWAYS AS \([\s\S]*?status NOT IN \('PENDING', 'RUNNING', 'AWAITING_READBACK'\)[\s\S]*?\) STORED/);
     });
 
     it("keeps history slim and unpartitioned, with uid retained", () => {
@@ -119,7 +125,9 @@ describe("schema.sql", () => {
 
     it("gates partition drop on zero non-terminal rows", () => {
         const fn = sql.slice(sql.indexOf("FUNCTION drop_operations_partition"));
-        expect(fn).toContain("status IN (''PENDING'', ''RUNNING'')");
+        // Counts via the derived column, so a new non-terminal status is
+        // covered automatically rather than by remembering this site.
+        expect(fn).toContain("WHERE NOT terminal");
         expect(fn).toMatch(/IF live_rows > 0 THEN[\s\S]*?RETURN false/);
     });
 });
@@ -376,7 +384,7 @@ describe("pendingCounts", () => {
     it("reports zeroes for an empty backlog", async () => {
         expect(await store.pendingCounts("ad-prod")).toEqual({ interactive: 0, batch: 0 });
         expect(pool.queries[0]!.values).toEqual(["ad-prod"]);
-        expect(pool.queries[0]!.text).toContain("status = 'PENDING'");
+        expect(pool.queries[0]!.text).toContain("status IN ('PENDING', 'AWAITING_READBACK')");
     });
 });
 
