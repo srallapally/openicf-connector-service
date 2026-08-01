@@ -1,7 +1,9 @@
 // ========== Registry & Facade ==========
 export { ConnectorRegistry } from './registry/ConnectorRegistry.js';
 export { ConnectorFacade } from './registry/ConnectorFacade.js';
-export type { ConnectorInstance } from './registry/ConnectorRegistry.js';
+export { ConnectorManager } from './registry/ConnectorManager.js';
+export type { ConnectorInstance, InstanceDefinition } from './registry/ConnectorRegistry.js';
+export type { Lease, ConnectorManagerOptions } from './registry/ConnectorManager.js';
 
 // ========== Infrastructure ==========
 export { CircuitBreaker } from './infra/CircuitBreaker.js';
