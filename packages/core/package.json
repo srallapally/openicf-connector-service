@@ -47,6 +47,7 @@
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "test": "vitest run",
+    "test:pg": "eval \"$(bash ../../scripts/test-pg.sh)\" && vitest run",
     "test:watch": "vitest",
     "lint": "eslint . || true"
   },

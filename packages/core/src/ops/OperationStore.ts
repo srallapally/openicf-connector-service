@@ -88,23 +88,57 @@ function advisoryLockKey(idempotencyKey: string): string {
   return createHash("sha256").update(idempotencyKey).digest().readBigInt64BE(0).toString();
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * True if `id` could be an operation id.
+ *
+ * Operation ids reach this layer straight from a URL path, and Postgres
+ * answers a malformed uuid with a type error rather than an empty result. Left
+ * unchecked that turns "operation 404" into "database error 500" on any
+ * mistyped id, so a syntactically impossible id is treated as simply absent --
+ * which it is.
+ */
+function isOperationId(id: string): boolean {
+  return UUID_RE.test(id);
+}
+
 const CLAIM_SQL = `
 WITH caps AS (
     SELECT * FROM unnest($1::text[], $2::int[]) AS t(instance_id, cap)
 ),
-ranked AS (
+lane_leaders AS (
+    -- At most one operation per (instance, lane) may enter a cycle. The lane
+    -- exists to serialize writes against a single object, so claiming two of
+    -- them together would defeat it just as surely as ignoring active lanes.
     SELECT o.id,
            o.created_at,
            o.priority,
+           o.instance_id,
+           c.cap,
            row_number() OVER (
-               PARTITION BY o.instance_id
+               PARTITION BY o.instance_id, o.lane_key
                ORDER BY (o.priority = 'interactive') DESC, o.created_at
-           ) AS rn,
-           c.cap
+           ) AS lane_rn
     FROM operations o
     JOIN caps c ON c.instance_id = o.instance_id
     WHERE o.status = 'PENDING'
       AND NOT (o.lane_key = ANY($3::text[]))
+),
+ranked AS (
+    -- Rank after collapsing lanes, not before: ranking first would let a
+    -- backlog of same-lane operations consume an instance's cap with rows
+    -- that are then discarded, under-filling the cycle.
+    SELECT id,
+           created_at,
+           priority,
+           cap,
+           row_number() OVER (
+               PARTITION BY instance_id
+               ORDER BY (priority = 'interactive') DESC, created_at
+           ) AS rn
+    FROM lane_leaders
+    WHERE lane_rn = 1
 ),
 picked AS (
     SELECT id, created_at
@@ -130,6 +164,27 @@ RETURNING o.id, o.instance_id, o.object_class, o.op_type, o.priority, o.lane_key
 `;
 
 /**
+ * The operation-store contract.
+ *
+ * Extracted so the Postgres implementation and the in-memory test double are
+ * held to one shared suite. Two implementations of a claim protocol drift
+ * silently otherwise, and the in-memory one is what most dispatcher tests run
+ * against -- if it disagrees with Postgres, those tests prove nothing.
+ */
+export interface OperationStoreApi {
+  enqueue(op: EnqueueInput): Promise<EnqueueResult>;
+  claimBatch(
+      limit: number,
+      activeLaneKeys: readonly string[],
+      perInstanceAvailable: ReadonlyMap<string, number>,
+  ): Promise<ClaimedOperation[]>;
+  finalize(id: string, outcome: OperationOutcome, result?: unknown, errorCode?: string | null): Promise<boolean>;
+  requeue(id: string): Promise<boolean>;
+  pendingCounts(instanceId: string): Promise<PendingCounts>;
+  getStatus(id: string): Promise<OperationStatusRow | null>;
+}
+
+/**
  * Durable store for asynchronous mutations.
  *
  * Takes a `pg.Pool` and never creates one: pool sizing belongs to the process
@@ -139,7 +194,7 @@ RETURNING o.id, o.instance_id, o.object_class, o.op_type, o.priority, o.lane_key
  * Every statement is parameterized. No identifier or value is interpolated
  * into SQL text anywhere in this class.
  */
-export class OperationStore {
+export class OperationStore implements OperationStoreApi {
   constructor(private readonly pool: Pool) {}
 
   /** Apply the DDL. Idempotent; safe to run on every boot. */
@@ -284,6 +339,7 @@ export class OperationStore {
       result?: unknown,
       errorCode?: string | null,
   ): Promise<boolean> {
+    if (!isOperationId(id)) return false;
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -350,6 +406,7 @@ export class OperationStore {
    * duplicate requeue looks like.
    */
   async requeue(id: string): Promise<boolean> {
+    if (!isOperationId(id)) return false;
     const res = await this.pool.query(
         `UPDATE operations
             SET status = 'PENDING',
@@ -394,6 +451,7 @@ export class OperationStore {
    * null there even for a success -- the Uid is reported instead.
    */
   async getStatus(id: string): Promise<OperationStatusRow | null> {
+    if (!isOperationId(id)) return null;
     const hot = await this.pool.query(
         `SELECT id, instance_id, object_class, op_type, status, attempt_count,
                 result, error_code, created_at, finalized_at
