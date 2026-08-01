@@ -16,6 +16,7 @@ import { cmp } from "../filter/ast.js";
 import type { OperationOptions, OperationOutcome, OperationPriority } from "../spi/types.js";
 import type { ResolvedRuntimeConfig } from "../config/runtime.js";
 import type { ClaimedOperation, OperationStoreApi } from "./OperationStore.js";
+import { noopMetrics, METRICS, type MetricsSink } from "../infra/Metrics.js";
 
 export interface DispatcherConfig {
   /** How often to attempt a claim cycle. Default 25ms. */
@@ -40,6 +41,8 @@ export interface DispatcherConfig {
   /** Clock seam for tests. */
   now?: (() => number) | undefined;
   logger?: { error(msg: string): void } | undefined;
+  /** Where measurements go. Defaults to discarding them. */
+  metrics?: MetricsSink | undefined;
 }
 
 /**
@@ -57,6 +60,9 @@ interface ResolvedDispatcherConfig {
   backoffMaxMs: number;
   readBackGraceMs: number;
 }
+
+/** Roughly one backlog sample per second at the default 25ms claim interval. */
+const BACKLOG_SAMPLE_EVERY_N_CYCLES = 40;
 
 const DEFAULTS = {
   claimIntervalMs: 25,
@@ -90,6 +96,7 @@ export class Dispatcher {
   private readonly cfg: ResolvedDispatcherConfig;
   private readonly now: () => number;
   private readonly logger: { error(msg: string): void };
+  private readonly metrics: MetricsSink;
 
   /** Lanes with an attempt in flight, excluded from the next claim. */
   private readonly activeLanes = new Set<string>();
@@ -107,6 +114,7 @@ export class Dispatcher {
   private readonly limiters = new Map<string, RateLimiter>();
   /** Rotating start offset, so one instance cannot always claim first. */
   private roundRobinCursor = 0;
+  private backlogSampleCountdown = 0;
 
   private timer: ReturnType<typeof setInterval> | undefined;
   private cycleInFlight = false;
@@ -129,6 +137,7 @@ export class Dispatcher {
     };
     this.now = c.now ?? (() => Date.now());
     this.logger = c.logger ?? { error: (m) => console.error(m) };
+    this.metrics = c.metrics ?? noopMetrics;
   }
 
   start(): void {
@@ -160,9 +169,14 @@ export class Dispatcher {
   async runCycle(): Promise<number> {
     if (this.cycleInFlight || this.stopped) return 0;
     this.cycleInFlight = true;
+    const cycleStart = this.now();
     try {
       const available = this.computeAvailability();
       if (available.size === 0) return 0;
+
+      // Sampled before the claim, so it reports the backlog rather than
+      // whatever the claim left behind.
+      await this.sampleBacklog(available);
 
       const claimed = await this.store.claimBatch(
           this.cfg.claimBatchSize,
@@ -170,7 +184,19 @@ export class Dispatcher {
           available,
       );
 
+      this.metrics.histogram(METRICS.CLAIM_CYCLE_MS, this.now() - cycleStart);
+      this.metrics.counter(METRICS.CLAIMED, claimed.length);
+
       for (const op of claimed) {
+        // How long this row waited before anyone picked it up. Paired with
+        // backlog depth this is the health signal: a large backlog that is
+        // draining is fine, a small one that is not is not.
+        this.metrics.gauge(
+            METRICS.OLDEST_PENDING_AGE_MS,
+            Math.max(0, this.now() - op.createdAt.getTime()),
+            { instance: op.instanceId, priority: op.priority },
+        );
+
         this.activeLanes.add(op.laneKey);
         this.running.set(op.instanceId, (this.running.get(op.instanceId) ?? 0) + 1);
 
@@ -241,6 +267,32 @@ export class Dispatcher {
     return limiter.tryConsume(1);
   }
 
+  /**
+   * Emit backlog depth, on a slower cadence than the claim loop.
+   *
+   * pendingCounts is a query per instance, and at a 25ms claim interval
+   * sampling every cycle would put more load on the database than the work it
+   * is measuring.
+   */
+  private async sampleBacklog(available: ReadonlyMap<string, number>): Promise<void> {
+    if (this.backlogSampleCountdown-- > 0) return;
+    this.backlogSampleCountdown = BACKLOG_SAMPLE_EVERY_N_CYCLES;
+
+    for (const instanceId of available.keys()) {
+      try {
+        const counts = await this.store.pendingCounts(instanceId);
+        this.metrics.gauge(METRICS.BACKLOG_DEPTH, counts.interactive, {
+          instance: instanceId, priority: "interactive",
+        });
+        this.metrics.gauge(METRICS.BACKLOG_DEPTH, counts.batch, {
+          instance: instanceId, priority: "batch",
+        });
+      } catch {
+        // Measurement must never break the drain it is measuring.
+      }
+    }
+  }
+
   /** Lanes that must not be claimed this cycle: in flight, or inside a backoff. */
   private excludedLanes(): string[] {
     const now = this.now();
@@ -251,6 +303,7 @@ export class Dispatcher {
   }
 
   private async execute(op: ClaimedOperation): Promise<void> {
+    const startedAt = this.now();
     let lease: Lease | undefined;
     try {
       lease = await this.manager.acquire(op.instanceId);
@@ -277,6 +330,12 @@ export class Dispatcher {
       });
     } finally {
       lease.release();
+      // Measured around the whole attempt, including connector acquisition,
+      // because that is the latency an operation actually experiences.
+      this.metrics.histogram(METRICS.ATTEMPT_LATENCY_MS, this.now() - startedAt, {
+        instance: op.instanceId,
+        op: op.opType,
+      });
     }
   }
 
@@ -498,9 +557,21 @@ export class Dispatcher {
       if (r.delayMs && r.delayMs > 0) {
         this.laneDeferredUntil.set(op.laneKey, this.now() + r.delayMs);
       }
+      this.metrics.counter(METRICS.REQUEUED, 1, {
+        instance: op.instanceId,
+        op: op.opType,
+        reason: r.errorCode ?? "UNKNOWN",
+      });
       await this.safeRequeue(op.id);
       return;
     }
+
+    this.metrics.counter(METRICS.OUTCOME, 1, {
+      instance: op.instanceId,
+      op: op.opType,
+      outcome: r.outcome,
+    });
+
     try {
       await this.store.finalize(op.id, r.outcome, r.result, r.errorCode ?? null);
     } catch (e) {

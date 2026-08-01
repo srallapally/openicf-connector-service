@@ -13,6 +13,7 @@ import { ConnectorFacade } from "./ConnectorFacade.js";
 import { makePooledSpi } from "./pooledSpi.js";
 import type { Pooled } from "../infra/Pool.js";
 import type { ConnectorSpi } from "../spi/types.js";
+import { noopMetrics, METRICS, type MetricsSink } from "../infra/Metrics.js";
 
 /**
  * A borrowed connector.
@@ -47,6 +48,8 @@ export interface ConnectorManagerOptions {
   /** Clock seam for tests. */
   now?: () => number;
   logger?: { error(msg: string): void };
+  /** Where measurements go. Defaults to discarding them. */
+  metrics?: MetricsSink;
 }
 
 const DEFAULTS = {
@@ -80,6 +83,7 @@ export class ConnectorManager {
   private readonly sweepIntervalMs: number;
   private readonly now: () => number;
   private readonly logger: { error(msg: string): void };
+  private readonly metrics: MetricsSink;
   private sweepTimer: ReturnType<typeof setInterval> | undefined;
   private shuttingDown = false;
 
@@ -92,6 +96,7 @@ export class ConnectorManager {
     this.sweepIntervalMs = opts.sweepIntervalMs ?? DEFAULTS.sweepIntervalMs;
     this.now = opts.now ?? (() => Date.now());
     this.logger = opts.logger ?? { error: (m) => console.error(m) };
+    this.metrics = opts.metrics ?? noopMetrics;
   }
 
   /** Number of instances currently constructed. */
@@ -192,6 +197,7 @@ export class ConnectorManager {
       });
       const result: Materialized = { instance, facade, pool };
       entry.settled = result;
+      this.metrics.gauge(METRICS.LIVE_INSTANCES, this.live.size);
       return result;
     } catch (e) {
       // Drop the failed entry before rethrowing so the next acquire retries
@@ -227,6 +233,17 @@ export class ConnectorManager {
   async sweep(): Promise<void> {
     const now = this.now();
     const expired: LiveEntry[] = [];
+
+    // The sweep is the natural cadence for pool occupancy: frequent enough to
+    // spot saturation, rare enough not to poll tarn on every operation.
+    this.metrics.gauge(METRICS.LIVE_INSTANCES, this.live.size);
+    for (const entry of this.live.values()) {
+      const pool = entry.settled?.pool;
+      if (!pool) continue;
+      const stats = pool.stats();
+      this.metrics.gauge(METRICS.POOL_USED, stats.used, { instance: entry.instanceId });
+      this.metrics.gauge(METRICS.POOL_FREE, stats.free, { instance: entry.instanceId });
+    }
 
     for (const entry of this.live.values()) {
       if (entry.refcount > 0 || entry.disposing) continue;
@@ -293,8 +310,12 @@ export class ConnectorManager {
    * which was already released at that point.
    */
   private async teardown(instanceId: string, m: Materialized): Promise<void> {
+    this.metrics.gauge(METRICS.LIVE_INSTANCES, this.live.size);
     if (m.pool) {
       try {
+        const stats = m.pool.stats();
+        this.metrics.gauge(METRICS.POOL_USED, stats.used, { instance: instanceId });
+        this.metrics.gauge(METRICS.POOL_FREE, stats.free, { instance: instanceId });
         await m.pool.destroyAll();
       } catch (e) {
         this.logger.error(
