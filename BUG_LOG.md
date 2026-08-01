@@ -111,10 +111,57 @@ The second point makes this larger than moving one `await`: it wants a
 representable "awaiting read-back" state, which the current three-column status
 model does not have.
 
+### Addendum — blast radius of a new non-terminal status
+
+Adding a status such as `AWAITING_READBACK` is not additive. Three consumers
+currently assume the status set is closed, and each enumerates its members by
+allow-list rather than deriving them:
+
+1. **The partition drop gate** — `drop_operations_partition` counts
+   `status IN ('PENDING', 'RUNNING')` (`schema.sql:185`). A new non-terminal
+   status is not in that list, so a partition holding a deferred read-back
+   counts as fully terminal and becomes droppable. The row is destroyed, and
+   with it the answer a caller was promised. This is the dangerous one: it
+   fails silently, in the direction of data loss, and the gate that exists to
+   prevent exactly this is what performs the deletion.
+
+2. **The partial claim index** — `operations_pending_idx` covers
+   `WHERE status = 'PENDING'` (`schema.sql:94-96`). Reclaiming read-back rows
+   means either widening that predicate or adding a second index. The choice is
+   not free: widening enlarges the hot index that every claim cycle scans, while
+   a second index adds a write on every status transition. Either way it shows
+   up in claim latency, which is the loop's tightest path.
+
+3. **The reaper** (BUG-2, once it exists) must recognise the state. A row
+   deferred for read-back looks abandoned by wall-clock age, so a reaper that
+   only understands `RUNNING` either ignores it — leaving it strandable — or a
+   naive age-based reaper reclaims it mid-wait and re-issues the create.
+
+A fourth site shares the same pattern and is easy to miss:
+
+4. **The lane index** — `operations_lane_idx` is predicated on
+   `status IN ('PENDING', 'RUNNING')` (`schema.sql:102`). A deferred read-back
+   row would fall out of the index that answers "which lanes are busy for this
+   instance", so lane-serialization checks would stop seeing it.
+
+The `operations_status_check` constraint (`schema.sql:80-88`) is a hard
+prerequisite — it rejects any value not in the list — but it is the benign one,
+because it fails loudly at insert rather than quietly at drop time.
+
+The root cause is that **"non-terminal" is written out three times in SQL and
+derived nowhere**. The TypeScript side does derive it: `OperationStatus` is
+`"PENDING" | "RUNNING" | OperationOutcome`, so terminal is exactly "is an
+`OperationOutcome`". The database has no such relationship. Worth fixing that
+asymmetry as part of this work — a `terminal boolean GENERATED ALWAYS AS
+(status = ANY(...))` column, or a predicate function the three sites share — so
+the next status added cannot silently miss a site.
+
 ### Notes
 
 Deliberately not fixed on report. The right shape touches the store contract and
-the status model, so it warrants its own phase rather than a patch.
+the status model, so it warrants its own phase rather than a patch. The addendum
+above is the argument for that: this is a schema migration with a data-loss
+failure mode, not an edit to one `await`.
 
 ---
 
@@ -182,7 +229,11 @@ path, which is the correct treatment for an attempt whose outcome is unknown.
 
 Note the interaction with BUG-1: a fix there that introduces an "awaiting
 read-back" state must make those rows reapable too, or it adds a second way to
-strand an operation.
+strand an operation. The reaper must also distinguish the two — a row waiting
+out its read-back delay looks abandoned by wall-clock age, and reclaiming it
+mid-wait re-issues the create that BUG-1's fix exists to avoid duplicating. See
+the addendum on BUG-1 for the full set of sites a new non-terminal status
+touches; this reaper is one of them.
 
 ### Notes
 
