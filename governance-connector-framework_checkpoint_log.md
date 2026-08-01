@@ -236,3 +236,39 @@
 - acceptance grep clean: no OperationStore/Dispatcher/OperationOutcome outside a signpost comment in spi/types.ts
 - framework branch feature/async-provisioning; main last merged at 491d2ac (phases 1-10, still carrying ops)
 - extraction source for the service: the commit immediately before this one (phases 11-12 complete, ops intact)
+
+---
+## CP-6 | 2026-08-01T19:11:00Z
+<!-- topic: post-extraction issue status roll-up -->
+
+### DECIDED
+- issue disposition on a component move: entries fixed before the move stay as history in the origin repo; open entries travel and are re-filed where the code lands — LOCKED
+- BUG-4 is the provisioning service's first bug-log entry, carried from here
+- extraction reference is a commit SHA, not a tag [remote rejects tag ref pushes]
+- P1 copies ops from af55795; the core git dependency pins e633763 [different commits by design: the last commit holding ops, and the first without it]
+- the framework's bug log stays in the framework [it records what was wrong with what was built here, and half those entries describe code that has left]
+
+### REJECTED
+- git tag `extraction-source-ops` as the durable extraction pointer → the remote accepts branch pushes but hangs up on tag refs; the tag exists locally only, so the SHA is recorded in prose instead
+- re-filing BUG-1/2/3 and RFE-1 in the service → all four were fixed before the move and their fixes travelled with the code; re-filing would imply open work
+
+### OPEN
+- BUG-4: reserved interactive slice computed but never enforced [context: `interactiveSlots`/`batchSlots` have no consumer; `computeAvailability` offers the whole mutation budget, so batch is never capped at budget minus slice; CP-1 and CP-2 both LOCK the asymmetry] — MOVED, open in the service
+- event-loop lag threshold for sidecar split — DEFERRED [blocked_on: prod metrics] (carried from CP-1..CP-5)
+- soak latency measured from enqueue, compressing priority separation on slow-enqueue runs [context: instrument, not framework] (carried from CP-4)
+- MemoryOperationStore.claimBatch O(n) per cycle [context: test double; left with the ops code, so this is the service's now] (carried from CP-4)
+- provisioning service repo does not exist; P0-P8 blocked on it (carried from CP-5)
+
+### STATE
+- issue roll-up, all five raised this cycle:
+  - BUG-1 read-back sleeps inline holding slot+lease — FIXED 9d3a977 (Phase 11)
+  - BUG-2 rows stranded RUNNING by a dead dispatcher — FIXED 9d3a977 (Phase 11)
+  - BUG-3 delta updates unreachable, gate guards nothing — FIXED e223fe5 (Phase 12)
+  - RFE-1 slice floor reserves a slot at fraction 0 — FIXED 9d3a977 (Phase 11); no runtime effect, see BUG-4
+  - BUG-4 slice computed but never enforced — OPEN, MOVED at e633763
+- framework bug log has no open entries that describe framework code
+- F13 complete at e633763: core 222 tests, websocket 242 unchanged, both build
+- core dependencies lru-cache, semver, tarn; vitest optional peer for the /testing subpath
+- no database tier in the framework: pg dependency, pg harness, contract suite, and postgres CI job all left
+- branch feature/async-provisioning @ e633763; origin/main @ 491d2ac (phases 1-10, still carrying ops); local main untouched at 9136e57
+- unmerged on the branch: phases 11-12, the three design records, and the extraction
