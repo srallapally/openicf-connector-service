@@ -85,6 +85,14 @@ export type OperationOutcome =
     | "FAILED_CONFIRMED"
     | "INDETERMINATE";
 
+/**
+ * Lifecycle status of a durable operation row: the two non-terminal states
+ * plus every {@link OperationOutcome}. A row is terminal exactly when its
+ * status is an OperationOutcome, which is the condition the partition drop
+ * gate and the finalize guard both test.
+ */
+export type OperationStatus = "PENDING" | "RUNNING" | OperationOutcome;
+
 // ---------- Schema types ----------
 export type AttrType =
     | "string" | "integer" | "boolean" | "datetime" | "reference" | "complex";
