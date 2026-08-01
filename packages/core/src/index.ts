@@ -27,6 +27,17 @@ export { loadExternalConnectors } from './loader/ExternalLoader.js';
 export type { Manifest, InstanceDef, Instances, ConnectorKey, ConnectorCapabilities } from './loader/types.js';
 export { toConnectorKey, parseConnectorKey, resolveCapabilities } from './loader/types.js';
 
+// ========== Async operation store ==========
+export { OperationStore, OPERATIONS_SCHEMA_PATH } from './ops/OperationStore.js';
+export type {
+  OperationType,
+  EnqueueInput,
+  EnqueueResult,
+  ClaimedOperation,
+  OperationStatusRow,
+  PendingCounts,
+} from './ops/OperationStore.js';
+
 // ========== Runtime configuration ==========
 export {
   resolveRuntimeConfig,
