@@ -395,7 +395,7 @@ line.
 | | |
 |---|---|
 | **Severity** | medium |
-| **Status** | MOVED to the provisioning service at CP-5 — **FIXED there** in Phase P1.5, see [governance-provisioning-service BUG-4](https://github.com/srallapally/governance-provisioning-service/blob/main/BUG_LOG.md#bug-4) |
+| **Status** | MOVED to the provisioning service at CP-5 — **FIXED there** in Phase P1.5, see [governance-provisioning-service BUG-4](https://github.com/srallapally/governance-provisioning-service/blob/main/docs/BUG_LOG.md#bug-4) |
 | **Component** | `packages/core/src/ops/Dispatcher.ts` (`computeAvailability`) |
 | **Reported** | 2026-08-01 |
 | **Affects** | `main@491d2ac` (Phase 7 onward) and the branch |
