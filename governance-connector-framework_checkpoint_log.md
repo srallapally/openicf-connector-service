@@ -272,3 +272,29 @@
 - no database tier in the framework: pg dependency, pg harness, contract suite, and postgres CI job all left
 - branch feature/async-provisioning @ e633763; origin/main @ 491d2ac (phases 1-10, still carrying ops); local main untouched at 9136e57
 - unmerged on the branch: phases 11-12, the three design records, and the extraction
+
+---
+## CP-7 | 2026-08-02T04:45:45Z
+<!-- topic: P8 integration results, event-loop lag baseline -->
+
+### DECIDED
+- the provisioning service's full numbered phase plan (P0-P8) is complete — LOCKED (service side); P8 (integrated soak against real Cloud SQL) was the last phase
+- BUG-4's fix is empirically confirmed under real infrastructure, not just local Postgres: a real Cloud SQL run observed the P1.5 property directly — 2 interactive attempts started while a batch attempt on the same instance was still in flight, once batch concurrency reached 3/10 — closing the loop this entry left open when it moved to the service at CP-5
+
+### REJECTED
+- treating P8's soak numbers as sufficient to resolve the sidecar-split threshold below → the OPEN item specifically blocks on production traffic, not synthetic soak load against a real database; recorded as a reference point, the item stays OPEN
+
+### OPEN
+- event-loop lag threshold for sidecar split — still DEFERRED [blocked_on: prod metrics] (carried CP-1..CP-6). P8 adds the first reference point taken against real infrastructure rather than a local one: mean ~10.5ms, p99 ~11.5-12.6ms, sampled every 2s across a 100-op run (4 instances, 10/instance mutation budget) against a real Cloud SQL instance. Still not production traffic, so the item does not close.
+- `MemoryOperationStore.claimBatch` is O(n) per cycle [context: test double only, now the service's own harness] (carried from CP-4, CP-6)
+- provisioning service repo now exists and is feature-complete through P8; remaining work lives in its own **Backlog** section (scoped least-privilege Cloud SQL role, connection limits, Dispatcher retry-tuning env vars, `JWT_REQUIRED_SCOPE` default/enforcement, Phase P6 metrics binding) — none of it blocks anything in this repository
+
+### STATE
+- P8's real Cloud SQL run (`iga-prov-db`, `OPS=100`, defaults otherwise): 100/100 operations reached a terminal state, 0 lane serialization violations, 0 INDETERMINATE, batch concurrency reached 3/10, 2 concurrent interactive-during-batch starts, event-loop lag mean ~10.5ms / p99 ~11.5-12.6ms
+- three real defects found only by real Cloud SQL runs, all fixed and merged in the service, none reproducible against local Postgres — all only visible under genuine network round-trip latency:
+  - name-allocation lane collapse in the soak script (`test/load/soakHttp.ts`, PR #11)
+  - a claim cycle racing `stop()`'s pool closure crashed the process — logged as the service's own BUG-8, a genuine `src/` defect (`src/ops/Dispatcher.ts`, PR #12)
+  - the soak script's sequential enqueue self-limited observed concurrency and skewed its own latency numbers, and the follow-up fix undersized the connection pool for its own new concurrency (`test/load/soakHttp.ts`, PRs #13, #14)
+- the CP-4 "soak latency measured from enqueue" item is resolved in the service's successor script: `test/load/soakHttp.ts`'s poller now starts concurrently with enqueueing rather than after it, so a slow enqueue phase no longer inflates every latency sample the way it could in the original `test/load/soak.ts` (which stayed in the service, untouched, still using the ordering-satisfiable comparison by documented design choice)
+- service README status line now reads "Phase P8 delivered — all numbered phases complete"
+- nothing in this repository changed; this checkpoint records the service-side result of work whose framework/service boundary was locked at CP-5
